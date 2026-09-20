@@ -138,3 +138,8 @@ single-block queue limits, legacy buffer sizing, pause/resume/shutdown,
 fixed-buffer device reuse, queue errors, complete partial writes, bounded
 write stalls, and hardware-buffer growth limits. Use `--sanitize` to enable
 AddressSanitizer and UndefinedBehaviorSanitizer.
+
+The same runner exercises the real 8/16-bit sound-effect converters and mixer,
+including 11,025 Hz to 48 kHz, tiny buffers, fractional downsampling, stereo
+frames, shared voice positions and allocation bounds. Use `--resample-only`
+to run this focused crash-regression suite.

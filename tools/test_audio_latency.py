@@ -381,6 +381,176 @@ int main(void) {
 }
 """
 
+RESAMPLER_STUBS = r"""
+#include <climits>
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+using INT=int; using UBOOL=int; using BYTE=unsigned char; using SBYTE=signed char; using SWORD=int16_t;
+using DWORD=uint32_t; using QWORD=uint64_t; using SQWORD=int64_t; using DOUBLE=double;
+using _WORD=uint16_t; using FLOAT=float;
+#define TEXT(x) x
+#define check(x) assert(x)
+template<typename T> T Min(T a,T b) { return std::min(a,b); }
+template<typename T> T Max(T a,T b) { return std::max(a,b); }
+template<typename T> T Clamp(T v,T a,T b) { return std::min(std::max(v,a),b); }
+static void* appMalloc(DWORD size,const char*) { return malloc(size); }
+static void appFree(void* p) { free(p); }
+static void appMemset(void* p,int value,DWORD size) { memset(p,value,size); }
+static void appErrorf(const char*,...) { throw std::runtime_error("invalid audio sample"); }
+enum { SAMPLE_8BIT=1, SAMPLE_16BIT=2, SAMPLE_LOOPED=8, SAMPLE_MONO=16, SAMPLE_STEREO=32,
+       AUDIO_STEREO=1, AUDIO_16BIT=2, VOICE_ENABLED=1, VOICE_ACTIVE=2, VOICE_FINISHED=4,
+       AUDIO_TOTALVOICES=4, AUDIO_MAXVOLUME=256, AUDIO_MIDPAN=16384,
+       AUDIO_MINSAMPLE8=-128, AUDIO_MAXSAMPLE8=127, AUDIO_MINSAMPLE16=-32768, AUDIO_MAXSAMPLE16=32767 };
+static INT AudioRate=48000;
+static INT AudioFormat=AUDIO_16BIT, BufferSize=64, SampleVolume=AUDIO_MAXVOLUME;
+static void* MixBuffer=nullptr;
+"""
+
+RESAMPLER_TESTS = r"""
+static void CheckSharedPositions() {
+    Sample sample={};
+    sample.Type=SAMPLE_16BIT|SAMPLE_MONO|SAMPLE_LOOPED;
+    sample.SamplesPerSec=22050;
+    sample.Length=8;
+    sample.LoopStart=2;
+    sample.LoopEnd=7;
+    sample.Data=appMalloc(8*sizeof(SWORD),"sample");
+    memset(sample.Data,0,8*sizeof(SWORD));
+    for(int i=0;i<3;++i) {
+        Voices[i]={};
+        Voices[i].pSample=&sample;
+        Voices[i].State=VOICE_ENABLED|(i<2 ? VOICE_ACTIVE : 0);
+    }
+    Voices[0].PlayPosition=2;
+    Voices[1].PlayPosition=5;
+    Voices[2].PlayPosition=7;
+    AudioRate=48000;
+    ConvertVoice16(&Voices[0]);
+    assert(sample.Length==18);
+    assert(Voices[0].PlayPosition==4 && Voices[1].PlayPosition==10);
+    assert(Voices[2].PlayPosition==7);
+    assert(sample.LoopStart==4 && sample.LoopEnd==17);
+    appFree(sample.Data);
+    for(auto& voice : Voices) voice={};
+}
+
+static void CheckRealMixer() {
+    for(int bits : {SAMPLE_8BIT,SAMPLE_16BIT}) {
+        for(bool loop : {false,true}) {
+            Sample sample={};
+            sample.Type=bits|SAMPLE_MONO|(loop ? SAMPLE_LOOPED : 0);
+            sample.SamplesPerSec=11025;
+            sample.Length=1;
+            sample.Data=appMalloc(bits==SAMPLE_8BIT ? 1 : sizeof(SWORD),"sample");
+            if(bits==SAMPLE_8BIT) *static_cast<BYTE*>(sample.Data)=192;
+            else *static_cast<SWORD*>(sample.Data)=1000;
+            Voices[0]={};
+            Voices[0].pSample=&sample;
+            Voices[0].State=VOICE_ENABLED|VOICE_ACTIVE;
+            Voices[0].Volume=128;
+            Voices[0].Panning=AUDIO_MIDPAN;
+            AudioRate=48000;
+            MixBuffer=appMalloc(BufferSize,"mix");
+            memset(MixBuffer,0,BufferSize);
+            if(bits==SAMPLE_8BIT) MixVoice8to16(0); else MixVoice16to16(0);
+            assert(sample.Length==5);
+            const int expected=bits==SAMPLE_8BIT ? 16384 : 1000;
+            for(int i=0;i<BufferSize/int(sizeof(SWORD));++i)
+                assert(static_cast<SWORD*>(MixBuffer)[i]==((loop || i<5) ? expected : 0));
+            assert(bool(Voices[0].State&VOICE_ACTIVE)==loop);
+            appFree(sample.Data);
+            appFree(MixBuffer);
+            MixBuffer=nullptr;
+            Voices[0]={};
+        }
+    }
+}
+
+static void CheckInvalidSamples() {
+    SWORD value=0;
+    Sample sample={};
+    sample.Data=&value;
+    sample.Length=1;
+    sample.SamplesPerSec=11025;
+    Voice voice={};
+    voice.pSample=&sample;
+    for(int scenario=0;scenario<4;++scenario) {
+        AudioRate=scenario==0 ? 0 : 48000;
+        sample.SamplesPerSec=scenario==1 ? 0 : 11025;
+        sample.Length=scenario==2 ? 0 : (scenario==3 ? UINT32_MAX : 1);
+        bool rejected=false;
+        try { ConvertVoice16(&voice); }
+        catch(const std::runtime_error&) { rejected=true; }
+        assert(rejected);
+        assert(sample.Data==&value);
+    }
+}
+
+template<typename T> void CheckConversion(int sourceRate,int outputRate,int frames,int channels) {
+    Sample sample={};
+    Voice voice={};
+    const int bits=sizeof(T)==1 ? SAMPLE_8BIT : SAMPLE_16BIT;
+    sample.Type=bits | (channels==2 ? SAMPLE_STEREO : SAMPLE_MONO);
+    sample.SamplesPerSec=sourceRate;
+    sample.Length=frames;
+    T* data=static_cast<T*>(appMalloc(frames*channels*sizeof(T),"sample"));
+    for(int i=0;i<frames;++i)
+        for(int c=0;c<channels;++c)
+            data[i*channels+c]=sizeof(T)==1 ? T((i*19+c*71)%256) : T((i*211+c*7000)%32000-16000);
+    sample.Data=data;
+    voice.pSample=&sample;
+    AudioRate=outputRate;
+    const DWORD expected=DWORD((uint64_t(frames)*outputRate+sourceRate-1)/sourceRate);
+    const T first=data[0], last=data[(frames-1)*channels];
+    if(sizeof(T)==1) ConvertVoice8(&voice); else ConvertVoice16(&voice);
+    assert(sample.SamplesPerSec==unsigned(outputRate));
+    assert(sample.Length==expected);
+    const T* converted=static_cast<const T*>(sample.Data);
+    assert(converted[0]==first);
+    if(frames==1) {
+        for(DWORD i=0;i<sample.Length;++i)
+            for(int c=0;c<channels;++c)
+                assert(converted[i*channels+c]==(sizeof(T)==1 ? T(c*71) : T(c*7000-16000)));
+    }
+    if(sourceRate<outputRate)
+        assert(converted[(sample.Length-1)*channels]==last);
+    for(DWORD i=0;i<sample.Length;++i) {
+        const uint64_t position=uint64_t(i)*sourceRate;
+        const DWORD left=DWORD(position/outputRate);
+        const DWORD right=std::min<DWORD>(left+1,frames-1);
+        const uint64_t fraction=position%outputRate;
+        for(int c=0;c<channels;++c) {
+            const int a=sizeof(T)==1 ? int((left*19+c*71)%256) : int((left*211+c*7000)%32000)-16000;
+            const int b=sizeof(T)==1 ? int((right*19+c*71)%256) : int((right*211+c*7000)%32000)-16000;
+            const T value=T(a+(int64_t(b-a)*int64_t(fraction))/outputRate);
+            assert(converted[i*channels+c]==value);
+        }
+    }
+    appFree(sample.Data);
+}
+int main() {
+    // Reproduces the native-rate regression: the old fourfold upsampler reads beyond this buffer.
+    CheckConversion<SWORD>(11025,48000,1,1);
+    for(int sourceRate : {11025,22050,44100,48000})
+        for(int outputRate : {8000,11025,16000,22050,32000,44100,48000,96000})
+            for(int frames : {1,2,3,4,7,8,31,32,63})
+                for(int channels : {1,2}) {
+                    CheckConversion<BYTE>(sourceRate,outputRate,frames,channels);
+                    CheckConversion<SWORD>(sourceRate,outputRate,frames,channels);
+                }
+    CheckConversion<SWORD>(11025,48000,32768,1);
+    CheckSharedPositions();
+    CheckRealMixer();
+    CheckInvalidSamples();
+    puts("Audio resampler: native rates, bounded reads, fractional ratios, real mixing and shared positions passed.");
+}
+"""
+
 
 def main():
     core = (AUDIO / "AudioCoreLinux.cpp").read_text()
@@ -388,6 +558,7 @@ def main():
     mixer = (AUDIO / "AudioMixer.cpp").read_text()
     aaudio = (SDL_AUDIO / "SDL_aaudio.c").read_text()
     aaudio_header = (SDL_AUDIO / "SDL_aaudio.h").read_text()
+    audio_header = (ROOT / "third_party/ut99dc/Source/Audio/Inc/AudioLibrary.h").read_text()
     private = re.search(r"struct SDL_PrivateAudioData\s*\{.*?\n\};", aaudio_header, re.S).group()
 
     mixer_code = MIXER_STUBS + "".join(function(core, name) for name in (
@@ -400,16 +571,29 @@ def main():
     aaudio_code = AAUDIO_STUBS + private + AAUDIO_DEVICE + "".join(function(aaudio, name) for name in (
         "aaudio_ConfigureOutputBuffer", "aaudio_CheckUnderruns", "aaudio_PlayDevice",
     )) + AAUDIO_TESTS
+    sample_types = "\n".join(
+        re.search(r"struct " + name + r"\s*\{.*?\n\};", audio_header, re.S).group()
+        for name in ("Sample", "Voice")
+    )
+    resampler_code = RESAMPLER_STUBS + sample_types + "\nVoice Voices[AUDIO_TOTALVOICES];\n"
+    resampler_code += "".join(function(mixer, name) for name in (
+        "ResamplePosition", "ResampleVoice", "ConvertVoice8", "ConvertVoice16", "MixVoice8to16", "MixVoice16to16",
+    ))
+    resampler_code += RESAMPLER_TESTS
 
     open_device = function(aaudio, "aaudio_OpenDevice")
     assert "iscapture ? this->spec.freq : AAUDIO_UNSPECIFIED" in open_device
     assert "iscapture ? AAUDIO_PERFORMANCE_MODE_NONE : AAUDIO_PERFORMANCE_MODE_LOW_LATENCY" in open_device
     sanitizer = ["-fsanitize=address,undefined"] if "--sanitize" in sys.argv[1:] else []
     with tempfile.TemporaryDirectory(prefix="ut99-audio-test-") as temp:
-        for name, compiler, standard, code in (
+        suites = (
+            ("resampler.cpp", "c++", "-std=c++17", resampler_code),
             ("mixer.cpp", "c++", "-std=c++17", mixer_code),
             ("aaudio.c", "cc", "-std=c11", aaudio_code),
-        ):
+        )
+        for name, compiler, standard, code in suites:
+            if "--resample-only" in sys.argv[1:] and name != "resampler.cpp":
+                continue
             path = Path(temp) / name
             binary = path.with_suffix("")
             path.write_text(code)

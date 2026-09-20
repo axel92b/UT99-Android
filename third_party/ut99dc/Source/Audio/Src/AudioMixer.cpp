@@ -11,6 +11,7 @@ Revision history:
 ------------------------------------------------------------------------------------*/
 
 #include "AudioPrivate.h"
+#include <limits.h>
 #if defined(__ANDROID__)
 #include "SDL.h"
 #endif
@@ -95,7 +96,7 @@ void MixVoice8to16(INT VoiceIndex)
 	if (CurrentVoice->State & VOICE_FINISHED)
 		return;
 
-	if (CurrentVoice->pSample->SamplesPerSec != AudioRate)
+	if (AudioRate <= 0 || CurrentVoice->pSample->SamplesPerSec != (DWORD)AudioRate)
 		ConvertVoice8( CurrentVoice );
 	
 	// How many samples are in this sound?
@@ -199,7 +200,7 @@ void MixVoice16to16(INT VoiceIndex)
 	if (CurrentVoice->State & VOICE_FINISHED)
 		return;
 
-	if (CurrentVoice->pSample->SamplesPerSec != AudioRate)
+	if (AudioRate <= 0 || CurrentVoice->pSample->SamplesPerSec != (DWORD)AudioRate)
 		ConvertVoice16( CurrentVoice );
 
 	// How many samples are in this sound?
@@ -293,125 +294,86 @@ void MixVoice16to16(INT VoiceIndex)
 	}
 }
 
-// Convert an 8 bit unsigned voice to the current rate.
-// Maintains unsignedness.
-void ConvertVoice8( Voice* InVoice )
+static INT ResamplePosition( INT Position, DWORD SourceRate, DWORD TargetRate, DWORD NewLength )
 {
-	// How fast is this sample?
-	INT VoiceRate = InVoice->pSample->SamplesPerSec;
-	if ((VoiceRate != 11025) && (VoiceRate != 22050) && (VoiceRate != 44100))
-		appErrorf( TEXT("Unsupported playback rate: %i"), VoiceRate );
-	if (VoiceRate > AudioRate)
-	{
-		// This voice is slower than our current rate.
-		INT RateFactor = VoiceRate / AudioRate;
-		INT NewSize;
-		if (InVoice->pSample->Length % 2 == 1)
-			NewSize = (InVoice->pSample->Length+1) / RateFactor;
-		else
-			NewSize = InVoice->pSample->Length / RateFactor;
-		BYTE* Source = (BYTE*) InVoice->pSample->Data;
-		BYTE* NewData = (BYTE*) appMalloc(NewSize, TEXT("Sample Data"));
-		check(NewData);
-		BYTE* Dest = NewData;
-
-		appMemset( Dest, 0x80, NewSize );
-		for (INT i=0; i<InVoice->pSample->Length; i += RateFactor)
-		{
-			*Dest = Source[i];
-			Dest++;
-		}
-
-		InVoice->PlayPosition = 0;
-		InVoice->pSample->SamplesPerSec = AudioRate;
-		InVoice->pSample->Length = NewSize;
-		void* OldData = InVoice->pSample->Data;
-		InVoice->pSample->Data = NewData;
-		appFree( OldData );
-	} else {
-		// This voice is faster than our current rate.
-		INT RateFactor = AudioRate / VoiceRate;
-		INT NewSize = InVoice->pSample->Length * RateFactor;
-
-		BYTE* Source = (BYTE*) InVoice->pSample->Data;
-		BYTE* NewData = (BYTE*) appMalloc(NewSize, TEXT("Sample Data"));
-		check(NewData);
-		BYTE* Dest = NewData;
-
-		appMemset( Dest, 0x80, NewSize );
-		for (INT i=0; i<NewSize; i++)
-		{
-			Dest[i] = *Source;
-			if (i%RateFactor == 1)
-				Source++;
-		}
-
-		InVoice->PlayPosition = 0;
-		InVoice->pSample->SamplesPerSec = AudioRate;
-		InVoice->pSample->Length = NewSize;
-		void* OldData = InVoice->pSample->Data;
-		InVoice->pSample->Data = (void*) NewData;
-		appFree( OldData );
-	}
+	const QWORD Scaled = (QWORD)Max(Position,0) * TargetRate / SourceRate;
+	return (INT)Min<QWORD>( Scaled, NewLength - 1 );
 }
 
-// Convert an 16 bit signed voice to the current rate.
-// Maintains signedness.
+// Called with the audio mutex held; samples can be shared by several active voices.
+static void ResampleVoice( Voice* InVoice, INT BytesPerSample )
+{
+	if( !InVoice || !InVoice->pSample || !InVoice->pSample->Data
+		|| !InVoice->pSample->Length || !InVoice->pSample->SamplesPerSec || AudioRate <= 0 )
+	{
+		appErrorf( TEXT("Cannot resample an invalid audio sample.") );
+		return;
+	}
+
+	Sample* Sound = InVoice->pSample;
+	const DWORD SourceRate = Sound->SamplesPerSec;
+	const DWORD TargetRate = (DWORD)AudioRate;
+	if( SourceRate == TargetRate )
+		return;
+
+	const DWORD Channels = (Sound->Type & SAMPLE_STEREO) ? 2 : 1;
+	const DWORD OldLength = Sound->Length;
+	const QWORD NewFrames = ((QWORD)OldLength * TargetRate + SourceRate - 1) / SourceRate;
+	const QWORD NewBytes = NewFrames * Channels * BytesPerSample;
+	if( NewFrames > INT_MAX || NewBytes > INT_MAX
+		|| (QWORD)OldLength * Channels * BytesPerSample > INT_MAX )
+	{
+		appErrorf( TEXT("Audio sample is too large to resample safely.") );
+		return;
+	}
+	const DWORD NewLength = (DWORD)NewFrames;
+	void* NewData = appMalloc( (DWORD)NewBytes, TEXT("Sample Data") );
+	check(NewData);
+
+	for( DWORD Frame=0; Frame<NewLength; ++Frame )
+	{
+		const QWORD Position = (QWORD)Frame * SourceRate;
+		const DWORD Left = (DWORD)(Position / TargetRate);
+		const DWORD Right = Min( Left + 1, OldLength - 1 );
+		const DWORD Fraction = (DWORD)(Position % TargetRate);
+		for( DWORD Channel=0; Channel<Channels; ++Channel )
+		{
+			const DWORD AIndex = Left * Channels + Channel;
+			const DWORD BIndex = Right * Channels + Channel;
+			const INT A = BytesPerSample == 1 ? ((BYTE*)Sound->Data)[AIndex] : ((SWORD*)Sound->Data)[AIndex];
+			const INT B = BytesPerSample == 1 ? ((BYTE*)Sound->Data)[BIndex] : ((SWORD*)Sound->Data)[BIndex];
+			const INT Value = A + (INT)((SQWORD)(B - A) * Fraction / TargetRate);
+			const DWORD Output = Frame * Channels + Channel;
+			if( BytesPerSample == 1 )
+				((BYTE*)NewData)[Output] = (BYTE)Value;
+			else
+				((SWORD*)NewData)[Output] = (SWORD)Value;
+		}
+	}
+
+	for( INT i=0; i<AUDIO_TOTALVOICES; ++i )
+		if( &Voices[i] != InVoice && Voices[i].pSample == Sound && (Voices[i].State & VOICE_ACTIVE) )
+			Voices[i].PlayPosition = ResamplePosition( Voices[i].PlayPosition, SourceRate, TargetRate, NewLength );
+	InVoice->PlayPosition = ResamplePosition( InVoice->PlayPosition, SourceRate, TargetRate, NewLength );
+	if( Sound->Type & SAMPLE_LOOPED )
+	{
+		Sound->LoopStart = (DWORD)Min<QWORD>( (QWORD)Sound->LoopStart * TargetRate / SourceRate, NewLength - 1 );
+		const QWORD End = Min<QWORD>( (QWORD)Sound->LoopEnd + 1, OldLength );
+		Sound->LoopEnd = (DWORD)Min<QWORD>( (End * TargetRate + SourceRate - 1) / SourceRate - 1, NewLength - 1 );
+	}
+	void* OldData = Sound->Data;
+	Sound->Data = NewData;
+	Sound->Length = NewLength;
+	Sound->SamplesPerSec = TargetRate;
+	appFree( OldData );
+}
+
+void ConvertVoice8( Voice* InVoice )
+{
+	ResampleVoice( InVoice, sizeof(BYTE) );
+}
+
 void ConvertVoice16( Voice* InVoice )
 {
-	// How fast is this sample?
-	INT VoiceRate = InVoice->pSample->SamplesPerSec;
-	if ((VoiceRate != 11025) && (VoiceRate != 22050) && (VoiceRate != 44100))
-		appErrorf( TEXT("Unsupported playback rate: %i"), VoiceRate );
-	if (VoiceRate > AudioRate)
-	{
-		// This voice is faster than our current rate.
-		INT RateFactor = VoiceRate / AudioRate;
-		INT NewSize;
-		if (InVoice->pSample->Length % 2 == 1)
-			NewSize = (InVoice->pSample->Length+1) / RateFactor;
-		else
-			NewSize = InVoice->pSample->Length / RateFactor;
-
-		SWORD* Source = (SWORD*) InVoice->pSample->Data;
-		SWORD* NewData = (SWORD*) appMalloc(NewSize*2, TEXT("Sample Data"));
-		SWORD* Dest = NewData;
-
-		appMemset(Dest, 0, NewSize*2);
-		for (INT i=0; i<InVoice->pSample->Length; i += RateFactor)
-		{
-			*Dest = Source[i];
-			Dest++;
-		}
-
-		InVoice->PlayPosition = 0;
-		InVoice->pSample->SamplesPerSec = AudioRate;
-		InVoice->pSample->Length = NewSize;
-		void* OldData = InVoice->pSample->Data;
-		InVoice->pSample->Data = (void*) NewData;
-		appFree( OldData );
-	} else {
-		// This voice is slower than our current rate.
-		INT RateFactor = AudioRate / VoiceRate;
-		INT NewSize = InVoice->pSample->Length * RateFactor;
-
-		SWORD* Source = (SWORD*) InVoice->pSample->Data;
-		SWORD* NewData = (SWORD*) appMalloc(NewSize*2, TEXT("Sample Data"));
-		SWORD* Dest = NewData;
-
-		appMemset( Dest, 0, NewSize*2 );
-		for (INT i=0; i<NewSize; i++)
-		{
-			Dest[i] = *Source;
-			if (i%RateFactor == 1)
-				Source++;
-		}
-
-		InVoice->PlayPosition = 0;
-		InVoice->pSample->SamplesPerSec = AudioRate;
-		InVoice->pSample->Length = NewSize;
-		void* OldData = InVoice->pSample->Data;
-		InVoice->pSample->Data = (void*) NewData;
-		appFree( OldData );
-	}
+	ResampleVoice( InVoice, sizeof(SWORD) );
 }

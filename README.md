@@ -153,6 +153,8 @@ and low-latency mode, with up to 512 frames requested per software block. It
 requests two hardware bursts, increasing that request to at most four if
 underruns occur. AAudio
 partial writes are completed instead of silently dropping the remainder.
+PCM sound effects are resampled with bounded fractional-rate interpolation,
+including native 48 kHz output; the old integer-ratio converter is not used.
 Older Android/OpenSL ES/AudioTrack paths retain their existing sample-rate and
 256-1024-frame block settings.
 

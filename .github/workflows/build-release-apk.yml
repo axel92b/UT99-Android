@@ -48,6 +48,9 @@ jobs:
             -o "$RUNNER_TEMP/test_android_controller_input"
           "$RUNNER_TEMP/test_android_controller_input"
 
+      - name: Check audio pacing
+        run: python3 tools/test_audio_latency.py
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:

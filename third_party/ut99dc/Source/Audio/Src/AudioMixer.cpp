@@ -11,89 +11,76 @@ Revision history:
 ------------------------------------------------------------------------------------*/
 
 #include "AudioPrivate.h"
+#if defined(__ANDROID__)
+#include "SDL.h"
+#endif
 
 /*------------------------------------------------------------------------------------
 	Mixing functions.
 ------------------------------------------------------------------------------------*/
 
-#define SOUND_MIXING	0
-#define	SOUND_PLAYING	1
-
 #define ADJUST_VOLUME(s, v) (s = (s*v)/AUDIO_MAXVOLUME)
 
 void* DoSound(void* Arguments)
 {
+#if defined(__ANDROID__)
+	if( SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH) != 0 )
+		debugf( NAME_Warning, TEXT("Android audio mixer: could not raise thread priority: %s"), appFromAnsi(SDL_GetError()) );
+#endif
 	// Allocate the mixing buffer.
 	ALock;
 	MixBuffer = appMalloc(BufferSize, TEXT("Mixing Buffer"));
 	AUnlock;
 
-	INT Task = SOUND_MIXING, i;
-	while (MixingThread.Valid)
+	for( ;; )
 	{
-		switch (Task)
+		ALock;
+		const UBOOL Valid = MixingThread.Valid;
+		AUnlock;
+		if( !Valid )
+			break;
+
+		// Wait before taking a snapshot of voices/music, never with the audio mutex held.
+		if( !AudioWait() )
 		{
-			case SOUND_MIXING:
-				ALock;
-				// Empty the mixing buffer.
-				appMemset(MixBuffer, 0, BufferSize);
-				for (i=0; i<AUDIO_TOTALVOICES; i++)
-				{
-					// Get an enabled and active voice.
-					if ((Voices[i].State&VOICE_ENABLED) && (Voices[i].State&VOICE_ACTIVE) && !AudioPaused)
-					{
-						// Mix a buffer's worth of sound.
-						INT Format = Voices[i].pSample->Type & SAMPLE_16BIT 
-							? SAMPLE_16BIT : SAMPLE_8BIT;
-						switch (Format)
-						{
-							case SAMPLE_8BIT:
-								if (AudioFormat & AUDIO_16BIT)
-									MixVoice8to16( i );
-								break;
-							case SAMPLE_16BIT:
-								if (AudioFormat & AUDIO_16BIT)
-									MixVoice16to16( i );
-								break;
-						}
-					}
-				}
-				// Mix tracker/UMX music after sound effects.
-				MixMusicIntoBuffer();
-				AUnlock;
-				Task = SOUND_PLAYING;
-				break;
-			case SOUND_PLAYING:
-				// Block until the audio device is writable.
-				if (!AudioPaused)
-				{
-					if (AudioWait() == 0)
-						break;
-				} else break;
-
-				ALock;
-				// Silence the audio buffer.
-				appMemset(AudioBuffer, 0, BufferSize);
-
-				// Ready the most recently mixed audio.
-				appMemcpy(AudioBuffer, MixBuffer, BufferSize);
-
-				// Play it.
-				if (!AudioPaused)
-				{
-					PlayAudio();
-				}
-				AUnlock;
-
-				Task = SOUND_MIXING;
-				break;
+			AudioSleep( 5 );
+			continue;
 		}
+
+		ALock;
+		if( !MixingThread.Valid || !AudioInitialized || AudioPaused )
+		{
+			AUnlock;
+			continue;
+		}
+		appMemset( MixBuffer, 0, BufferSize );
+		for( INT i=0; i<AUDIO_TOTALVOICES; ++i )
+		{
+			if( (Voices[i].State & VOICE_ENABLED) && (Voices[i].State & VOICE_ACTIVE) )
+			{
+				const INT Format = Voices[i].pSample->Type & SAMPLE_16BIT ? SAMPLE_16BIT : SAMPLE_8BIT;
+				if( AudioFormat & AUDIO_16BIT )
+				{
+					if( Format == SAMPLE_8BIT )
+						MixVoice8to16( i );
+					else
+						MixVoice16to16( i );
+				}
+			}
+		}
+		MixMusicIntoBuffer();
+		appMemcpy( AudioBuffer, MixBuffer, BufferSize );
+		PlayAudio();
+		AUnlock;
 	}
 
 	// Free the mixing buffer.
 	ALock;
 	if (MixBuffer != NULL)
+	{
 		appFree(MixBuffer);
+		MixBuffer = NULL;
+	}
 	AUnlock;
 	
 	ExitAudioThread(&MixingThread);

@@ -20,6 +20,9 @@ INT ReopenAudioDevice( DWORD Rate, INT OutputMode, INT Latency );
 ------------------------------------------------------------------------------------*/
 
 void PlayAudio();
+#if defined(__ANDROID__)
+void ClearAudioQueue();
+#endif
 
 /*------------------------------------------------------------------------------------
 	Read helpers.

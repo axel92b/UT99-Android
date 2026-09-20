@@ -122,3 +122,19 @@ Coverage includes mapped-controller/raw-joystick ownership, overlapping D-pad
 sources, menu transitions, held inputs, quick taps, diagonals, input resets,
 disconnect/reconnect state, stick and 20% trigger thresholds, and equal
 right-stick displacement over time at 20, 30, 60, 90, 120, and 144 FPS.
+
+## Audio regression checks
+
+The release workflow also checks audio pacing without requiring an Android
+device or game data:
+
+```sh
+python3 tools/test_audio_latency.py
+```
+
+The runner uses the production C/C++ mixer and AAudio functions with
+deterministic device stubs. It covers fresh-state mixing after queue waits,
+single-block queue limits, legacy buffer sizing, pause/resume/shutdown,
+fixed-buffer device reuse, queue errors, complete partial writes, bounded
+write stalls, and hardware-buffer growth limits. Use `--sanitize` to enable
+AddressSanitizer and UndefinedBehaviorSanitizer.

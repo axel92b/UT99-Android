@@ -51,6 +51,8 @@ void* GetAudioBuffer()
 #if defined(__ANDROID__)
 
 static SDL_AudioDeviceID AndroidAudioDevice = 0;
+static DOUBLE LastAndroidAudioQueueTime = 0.0;
+static DOUBLE LastAndroidAudioLateLog = 0.0;
 
 static INT NextPowerOfTwo( INT Value )
 {
@@ -80,11 +82,10 @@ INT OpenAudio( DWORD Rate, INT OutputMode, INT Latency )
 	appMemset( &Have, 0, sizeof(Have) );
 
 	INT Channels = (OutputMode & AUDIO_STEREO) ? 2 : 1;
-	// UT99_ANDROID_V80_OUYA_LOW_LATENCY_AUDIO:
-	// Keep Android queued audio short. OUYA/Android 4 can otherwise build up
-	// a very audible delay after a few seconds even though playback itself works.
+	const char* Driver = SDL_GetCurrentAudioDriver();
+	const UBOOL LowLatencyBackend = Driver && SDL_strcasecmp( Driver, "AAudio" ) == 0;
 	INT WantedSamples = (INT)((Rate * Max(Latency,10)) / 1000);
-	WantedSamples = Clamp( NextPowerOfTwo(WantedSamples), 256, 1024 );
+	WantedSamples = Clamp( NextPowerOfTwo(WantedSamples), 256, LowLatencyBackend ? 512 : 1024 );
 
 	Want.freq     = Rate;
 	Want.format   = AUDIO_S16SYS;
@@ -101,9 +102,11 @@ INT OpenAudio( DWORD Rate, INT OutputMode, INT Latency )
 		return 0;
 	}
 
-	if( Have.format != AUDIO_S16SYS )
+	if( Have.format != AUDIO_S16SYS || Have.freq <= 0 || Have.samples == 0
+		|| (Have.channels != 1 && Have.channels != 2) )
 	{
-		debugf( NAME_Init, TEXT("Android SDL audio: unsupported device format, need signed 16-bit." ) );
+		debugf( NAME_Init, TEXT("Android SDL audio: unsupported spec format=%i rate=%i channels=%i samples=%i."),
+			(INT)Have.format, Have.freq, (INT)Have.channels, (INT)Have.samples );
 		SDL_CloseAudioDevice( AndroidAudioDevice );
 		AndroidAudioDevice = 0;
 		AudioDevice = -1;
@@ -118,8 +121,6 @@ INT OpenAudio( DWORD Rate, INT OutputMode, INT Latency )
 
 	AudioRate  = Have.freq;
 	BufferSize = Have.samples * Have.channels * sizeof(SWORD);
-	if( BufferSize <= 0 )
-		BufferSize = WantedSamples * Channels * sizeof(SWORD);
 
 	AudioBuffer = (BYTE*) appMalloc( BufferSize, TEXT("Android SDL Audio Buffer") );
 	appMemset( AudioBuffer, 0, BufferSize );
@@ -127,8 +128,11 @@ INT OpenAudio( DWORD Rate, INT OutputMode, INT Latency )
 	SDL_ClearQueuedAudio( AndroidAudioDevice );
 	SDL_PauseAudioDevice( AndroidAudioDevice, 0 );
 	AudioDevice = 1;
+	LastAndroidAudioQueueTime = LastAndroidAudioLateLog = 0.0;
 
-	debugf( NAME_Init, TEXT("Android SDL audio opened: %i Hz, %i channel(s), %i samples, %i bytes."), AudioRate, Have.channels, Have.samples, BufferSize );
+	debugf( NAME_Init, TEXT("Android SDL audio opened: driver=%s, %i Hz, %i channel(s), %i samples, %.2f ms per block, one queued block."),
+		appFromAnsi(Driver ? Driver : "unknown"), AudioRate, (INT)Have.channels,
+		(INT)Have.samples, 1000.0 * Have.samples / AudioRate );
 	return 1;
 }
 
@@ -143,10 +147,20 @@ INT ReopenAudioDevice( DWORD Rate, INT OutputMode, INT Latency )
 	// the existing mixer path.
 	if( AndroidAudioDevice && AudioBuffer && BufferSize > 0 )
 	{
+		if( SDL_GetAudioDeviceStatus(AndroidAudioDevice) == SDL_AUDIO_STOPPED )
+		{
+			debugf( NAME_Warning, TEXT("Android SDL audio: output device stopped; restart audio before reopening it.") );
+			return 0;
+		}
 		debugf( NAME_Init, TEXT("Android SDL audio: keeping existing device for AudioStartOutput (%i Hz, %i bytes)."), AudioRate, BufferSize );
 		return 1;
 	}
 
+	if( MixingThread.Valid )
+	{
+		debugf( NAME_Warning, TEXT("Android SDL audio: cannot resize buffers while the mixer thread is active.") );
+		return 0;
+	}
 	debugf( NAME_Init, TEXT("Android SDL audio: opening device during AudioStartOutput fallback.") );
 	return OpenAudio( Rate, OutputMode, Latency );
 }
@@ -169,25 +183,37 @@ void CloseAudio()
 }
 
 // Audio flow control.
+void ClearAudioQueue()
+{
+	ALock;
+	LastAndroidAudioQueueTime = 0.0;
+	AUnlock;
+	if( AndroidAudioDevice )
+		SDL_ClearQueuedAudio( AndroidAudioDevice );
+}
+
 void PlayAudio()
 {
 	if( !AndroidAudioDevice || AudioDevice == -1 || AudioBuffer == NULL || BufferSize <= 0 )
 		return;
 
-	Uint32 Queued = SDL_GetQueuedAudioSize( AndroidAudioDevice );
-	if( Queued > (Uint32)(BufferSize * 8) )
+	const DOUBLE Now = appSeconds();
+	const INT Channels = (AudioFormat & AUDIO_STEREO) ? 2 : 1;
+	const DOUBLE BlockSeconds = (DOUBLE)BufferSize / (AudioRate * Channels * sizeof(SWORD));
+	if( LastAndroidAudioQueueTime > 0.0
+		&& Now - LastAndroidAudioQueueTime > BlockSeconds * 2.0 + 0.005
+		&& Now - LastAndroidAudioLateLog > 1.0 )
 	{
-		// Drop stale queued audio rather than letting OUYA drift 1-2 seconds behind.
-		SDL_ClearQueuedAudio( AndroidAudioDevice );
-	}
-	else
-	{
-		while( SDL_GetQueuedAudioSize( AndroidAudioDevice ) > (Uint32)(BufferSize * 2) )
-			AudioSleep( 1 );
+		LastAndroidAudioLateLog = Now;
+		debugf( NAME_Warning, TEXT("Android audio mixer late: %.2f ms between blocks (block %.2f ms)."),
+			(Now - LastAndroidAudioQueueTime) * 1000.0, BlockSeconds * 1000.0 );
 	}
 
+	// AudioWait already made room, before mixing and outside the audio mutex.
 	if( SDL_QueueAudio( AndroidAudioDevice, AudioBuffer, BufferSize ) != 0 )
-		debugf( NAME_Init, TEXT("Android SDL audio: SDL_QueueAudio failed: %s"), appFromAnsi(SDL_GetError()) );
+		debugf( NAME_Warning, TEXT("Android SDL audio: SDL_QueueAudio failed: %s"), appFromAnsi(SDL_GetError()) );
+	else
+		LastAndroidAudioQueueTime = appSeconds();
 }
 
 #else
@@ -493,15 +519,38 @@ void AudioSleep(INT	ms)
 INT AudioWait()
 {
 #if defined(__ANDROID__)
-	if( AndroidAudioDevice && AudioInitialized )
+	static UBOOL DeviceWasPaused = 0;
+	for( ;; )
 	{
-		while( SDL_GetQueuedAudioSize( AndroidAudioDevice ) > (Uint32)(BufferSize * 2) )
-			AudioSleep( 1 );
-		return 1;
+		ALock;
+		const UBOOL Active = MixingThread.Valid && AudioInitialized && !AudioPaused;
+		AUnlock;
+		if( !Active || !AndroidAudioDevice )
+			return 0;
+
+		if( SDL_GetAudioDeviceStatus(AndroidAudioDevice) != SDL_AUDIO_PLAYING )
+		{
+			DeviceWasPaused = 1;
+			ALock;
+			LastAndroidAudioQueueTime = 0.0;
+			AUnlock;
+			AudioSleep( 5 );
+			continue;
+		}
+		if( DeviceWasPaused )
+		{
+			SDL_ClearQueuedAudio( AndroidAudioDevice );
+			DeviceWasPaused = 0;
+		}
+		if( SDL_GetQueuedAudioSize(AndroidAudioDevice) == 0 )
+			return 1;
+		AudioSleep( 1 );
 	}
-	return 0;
 #else
-	if (AudioDevice && AudioInitialized)
+	ALock;
+	const UBOOL Active = MixingThread.Valid && AudioInitialized && !AudioPaused;
+	AUnlock;
+	if (AudioDevice != -1 && Active)
 	{
 		fd_set fdset;
 		FD_ZERO(&fdset);

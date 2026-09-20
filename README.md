@@ -142,6 +142,27 @@ Physical sticks honor `DeadZoneXYZ` (movement) and `DeadZoneRUV` (aiming) under
 activate at **20%** travel. Touch movement keeps its existing 35% threshold,
 and touch-look / physical-mouse smoothing settings are unchanged.
 
+### Audio latency
+
+Android audio is mixed only when the output queue has room, with at most one
+software block queued ahead. Stopping audio or resuming a paused output clears
+stale queued sound.
+
+On Android 8.1+ devices using AAudio, playback requests the native output rate
+and low-latency mode, with up to 512 frames requested per software block. It
+requests two hardware bursts, increasing that request to at most four if
+underruns occur. AAudio
+partial writes are completed instead of silently dropping the remainder.
+Older Android/OpenSL ES/AudioTrack paths retain their existing sample-rate and
+256-1024-frame block settings.
+
+Existing audio settings are preserved. `Latency` controls the requested block
+size within those limits, not total speaker/headphone delay; the opened device
+and buffer duration are logged at startup. Mixer lateness, hardware underruns
+and output errors are also logged. Device parameters are kept fixed while the
+mixer is running, so restart the app after changing output settings.
+Bluetooth audio can still add latency outside the game's control.
+
 ---
 
 ## ▣ Game data notes

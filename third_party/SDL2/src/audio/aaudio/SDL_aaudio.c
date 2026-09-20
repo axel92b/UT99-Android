@@ -24,6 +24,8 @@
 
 #include "SDL_audio.h"
 #include "SDL_loadso.h"
+#include "SDL_log.h"
+#include "SDL_timer.h"
 #include "../SDL_audio_c.h"
 #include "../../core/android/SDL_android.h"
 #include "SDL_aaudio.h"
@@ -70,6 +72,65 @@ void aaudio_errorCallback(AAudioStream *stream, void *userData, aaudio_result_t 
 
 #define LIB_AAUDIO_SO "libaaudio.so"
 
+/* UT99: start with two hardware bursts, allowing at most four on underruns. */
+static void aaudio_ConfigureOutputBuffer(_THIS)
+{
+    struct SDL_PrivateAudioData *private = this->hidden;
+    int32_t capacity = ctx.AAudioStream_getBufferCapacityInFrames(private->stream);
+    int32_t burst = ctx.AAudioStream_getFramesPerBurst(private->stream);
+    aaudio_result_t result;
+
+    if (capacity <= 0 || burst <= 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio invalid output buffer geometry: capacity=%d burst=%d", capacity, burst);
+        return;
+    }
+    private->frames_per_burst = burst;
+    private->buffer_limit_frames = (int32_t)SDL_min((int64_t)capacity, (int64_t)burst * 4);
+    result = ctx.AAudioStream_setBufferSizeInFrames(private->stream,
+        (int32_t)SDL_min((int64_t)capacity, (int64_t)burst * 2));
+    if (result < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio could not reduce output buffering: %s", ctx.AAudio_convertResultToText(result));
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "UT99 AAudio: %d Hz, %d-frame bursts, %d-frame output buffer, performance mode=%d",
+                    this->spec.freq, burst, (int)result, (int)ctx.AAudioStream_getPerformanceMode(private->stream));
+    }
+}
+
+static void aaudio_CheckUnderruns(_THIS)
+{
+    struct SDL_PrivateAudioData *private = this->hidden;
+    int32_t count = ctx.AAudioStream_getXRunCount(private->stream);
+    Uint32 now = SDL_GetTicks();
+    SDL_bool report = !private->last_xrun_log || (now - private->last_xrun_log >= 1000);
+
+    if (count < 0) {
+        if (report) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio could not read underrun count: %s", ctx.AAudio_convertResultToText(count));
+            private->last_xrun_log = now;
+        }
+        return;
+    }
+    if (count > private->last_xrun_count) {
+        int32_t size = ctx.AAudioStream_getBufferSizeInFrames(private->stream);
+        if (size > 0 && private->frames_per_burst > 0 && size < private->buffer_limit_frames) {
+            aaudio_result_t result = ctx.AAudioStream_setBufferSizeInFrames(private->stream,
+                (int32_t)SDL_min((int64_t)private->buffer_limit_frames, (int64_t)size + private->frames_per_burst));
+            if (result < 0) {
+                if (report) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio could not adjust output buffering: %s", ctx.AAudio_convertResultToText(result));
+                }
+            } else {
+                size = result;
+            }
+        }
+        if (report) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio underruns=%d, output buffer=%d frames", count, size);
+            private->last_xrun_log = now;
+        }
+    }
+    private->last_xrun_count = count;
+}
+
 static int aaudio_OpenDevice(_THIS, const char *devname)
 {
     struct SDL_PrivateAudioData *private;
@@ -99,7 +160,10 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
     }
     private = this->hidden;
 
-    ctx.AAudioStreamBuilder_setSampleRate(ctx.builder, this->spec.freq);
+    /* UT99: playback negotiates the native rate; SDL handles callers that require resampling. */
+    ctx.AAudioStreamBuilder_setSampleRate(ctx.builder, iscapture ? this->spec.freq : AAUDIO_UNSPECIFIED);
+    ctx.AAudioStreamBuilder_setPerformanceMode(ctx.builder,
+        iscapture ? AAUDIO_PERFORMANCE_MODE_NONE : AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     ctx.AAudioStreamBuilder_setChannelCount(ctx.builder, this->spec.channels);
     if(devname != NULL) {
         int aaudio_device_id = SDL_atoi(devname);
@@ -147,6 +211,9 @@ static int aaudio_OpenDevice(_THIS, const char *devname)
          this->spec.freq, SDL_AUDIO_BITSIZE(this->spec.format),
          this->spec.channels, (this->spec.format & 0x1000) ? "BE" : "LE", this->spec.samples);
 
+    if (!iscapture) {
+        aaudio_ConfigureOutputBuffer(this);
+    }
     SDL_CalculateAudioSpec(&this->spec);
 
     /* Allocate mixing buffer */
@@ -214,26 +281,54 @@ static Uint8 *aaudio_GetDeviceBuf(_THIS)
 static void aaudio_PlayDevice(_THIS)
 {
     struct SDL_PrivateAudioData *private = this->hidden;
-    aaudio_result_t res;
-    int64_t timeoutNanoseconds = 1 * 1000 * 1000; /* 8 ms */
-    res = ctx.AAudioStream_write(private->stream, private->mixbuf, private->mixlen / private->frame_size, timeoutNanoseconds);
-    if (res < 0) {
-        LOGI("%s : %s", __func__, ctx.AAudio_convertResultToText(res));
-    } else {
-        LOGI("SDL AAudio play: %d frames, wanted:%d frames", (int)res, private->mixlen / private->frame_size);
-    }
+    const int32_t frames = private->mixlen / private->frame_size;
+    const Uint32 frame_delay = SDL_max(1, frames * 1000 / this->spec.freq);
+    int32_t written = 0;
+    int stalled = 0;
 
-#if 0
-    /* Log under-run count */
-    {
-        static int prev = 0;
-        int32_t cnt = ctx.AAudioStream_getXRunCount(private->stream);
-        if (cnt != prev) {
-            SDL_Log("AAudio underrun: %d - total: %d", cnt - prev, cnt);
-            prev = cnt;
+    /* UT99: a timed write may accept only part of a block. Never silently lose its tail. */
+    while (written < frames) {
+        aaudio_result_t result;
+        if (SDL_AtomicGet(&this->shutdown) || !SDL_AtomicGet(&this->enabled)) {
+            return;
+        }
+        if (SDL_AtomicGet(&this->paused)) {
+            SDL_Delay(frame_delay);
+            return;
+        }
+        result = ctx.AAudioStream_write(private->stream,
+            private->mixbuf + written * private->frame_size, frames - written, (int64_t)100 * 1000 * 1000);
+        if (result > 0) {
+            written += result;
+            stalled = 0;
+        } else {
+            aaudio_stream_state_t state = ctx.AAudioStream_getState(private->stream);
+            if (SDL_AtomicGet(&this->shutdown) || !SDL_AtomicGet(&this->enabled)) {
+                return;
+            }
+            if (SDL_AtomicGet(&this->paused) || state == AAUDIO_STREAM_STATE_PAUSING || state == AAUDIO_STREAM_STATE_PAUSED) {
+                SDL_Delay(frame_delay);
+                return;
+            }
+            if (result == 0 || result == AAUDIO_ERROR_TIMEOUT) {
+                if (++stalled >= 3) {
+                    Uint32 now = SDL_GetTicks();
+                    if (!private->last_write_log || now - private->last_write_log >= 1000) {
+                        SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "AAudio output stalled; discarding %d unwritten frames", frames - written);
+                        private->last_write_log = now;
+                    }
+                    SDL_Delay(frame_delay);
+                    return;
+                }
+                SDL_Delay(1);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "AAudio playback failed: %s", ctx.AAudio_convertResultToText(result));
+                SDL_OpenedAudioDeviceDisconnected(this);
+                return;
+            }
         }
     }
-#endif
+    aaudio_CheckUnderruns(this);
 }
 
 static int aaudio_CaptureFromDevice(_THIS, void *buffer, int buflen)

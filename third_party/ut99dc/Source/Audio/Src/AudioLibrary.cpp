@@ -72,18 +72,19 @@ UBOOL AudioInit( DWORD Rate, INT OutputMode, INT Latency )
 
 	// Create the mixing thread.
 	AudioPaused = 1;
-	CreateAudioThread(&MixingThread, DoSound);
-	
 	AudioInitialized = 1;
+	CreateAudioThread(&MixingThread, DoSound);
 	return 1;
 }
 
 // Restart the audio system.
 UBOOL AudioReinit( DWORD Rate, INT OutputMode, INT Latency )
 {
+	ALock;
 	AudioInitialized = 0;
 	INT Result = ReopenAudioDevice( Rate, OutputMode, Latency );
 	AudioInitialized = 1;
+	AUnlock;
 
 	return Result;
 }
@@ -91,7 +92,9 @@ UBOOL AudioReinit( DWORD Rate, INT OutputMode, INT Latency )
 // Stop the audio system.
 UBOOL AudioShutdown()
 {
+	ALock;
 	AudioInitialized = 0;
+	AUnlock;
 	DestroyAudioThread(&MixingThread);	
 	CloseAudio();
 	DestroyAudioMutex(&Mutex);
@@ -146,6 +149,9 @@ UBOOL AudioStopOutput()
 		}
 	}
 	AUnlock;
+#if defined(__ANDROID__)
+	ClearAudioQueue();
+#endif
 	return 1;
 }
 

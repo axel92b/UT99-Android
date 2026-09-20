@@ -39,6 +39,13 @@ struct SDL_PrivateAudioData
     int mixlen;
     int frame_size;
 
+    /* UT99: bounded low-latency output buffering and underrun diagnostics. */
+    int32_t frames_per_burst;
+    int32_t buffer_limit_frames;
+    int32_t last_xrun_count;
+    Uint32 last_xrun_log;
+    Uint32 last_write_log;
+
     /* Resume device if it was paused automatically */
     int resume;
 };

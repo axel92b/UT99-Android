@@ -49,6 +49,9 @@ static volatile int GUT99AndroidImeOpenV79 = 0;
 #include <string.h>
 #include <ctype.h>
 
+#ifdef PLATFORM_ANDROID
+#include "AndroidControllerInput.h"
+#endif
 #include "NSDLDrv.h"
 
 // UT99_ANDROID_V111_OUYA_KEYBOARD_BUILDFIX: used by early keyboard helpers and later input paths.
@@ -1076,6 +1079,7 @@ static FLOAT GUT99V50LT = 0.0f;
 static FLOAT GUT99V50RT = 0.0f;
 static FLOAT GUT99V50HatX = 0.0f;
 static FLOAT GUT99V50HatY = 0.0f;
+static FAndroidDPadState GUT99AndroidDPad;
 static UBOOL GUT99V50OldA = 0;
 static UBOOL GUT99V50OldB = 0;
 static UBOOL GUT99V50OldX = 0;
@@ -1212,10 +1216,6 @@ static UBOOL GUT99V49OldL2 = 0;
 static UBOOL GUT99V49OldR2 = 0;
 static UBOOL GUT99V49OldThumbL = 0;
 static UBOOL GUT99V49OldThumbR = 0;
-static UBOOL GUT99V49OldDPadUp = 0;
-static UBOOL GUT99V49OldDPadDown = 0;
-static UBOOL GUT99V49OldDPadLeft = 0;
-static UBOOL GUT99V49OldDPadRight = 0;
 static UBOOL GUT99V49OldRJoyLeft = 0;
 static UBOOL GUT99V49OldRJoyRight = 0;
 static UBOOL GUT99V49OldRJoyUp = 0;
@@ -1251,6 +1251,60 @@ static void UT99V49MenuEdgeKey( UNSDLViewport* Viewport, UBOOL Now, UBOOL& Old, 
     }
 }
 
+static Uint8 UT99AndroidDirectDPad()
+{
+    Uint8 Down = SDL_HAT_CENTERED;
+    if( GUT99V50BtnDPadUp || GUT99V50HatY < -0.50f ) Down |= SDL_HAT_UP;
+    if( GUT99V50BtnDPadDown || GUT99V50HatY > 0.50f ) Down |= SDL_HAT_DOWN;
+    if( GUT99V50BtnDPadLeft || GUT99V50HatX < -0.50f ) Down |= SDL_HAT_LEFT;
+    if( GUT99V50BtnDPadRight || GUT99V50HatX > 0.50f ) Down |= SDL_HAT_RIGHT;
+    return Down;
+}
+
+static void UT99AndroidTickDPad( UNSDLViewport* Viewport, UBOOL bMenu )
+{
+    if( !Viewport )
+        return;
+
+    const FAndroidDPadEdges Edges = GUT99AndroidDPad.Update( UT99AndroidDirectDPad(), bMenu != 0 );
+    const Uint8 Directions[] = { SDL_HAT_UP, SDL_HAT_DOWN, SDL_HAT_LEFT, SDL_HAT_RIGHT };
+    const EInputKey Keys[] = { IK_JoyPovUp, IK_JoyPovDown, IK_JoyPovLeft, IK_JoyPovRight };
+    const EInputKey UiKeys[] = { IK_Up, IK_Down, IK_Left, IK_Right };
+
+    for( INT i = 0; i < 4; ++i )
+        if( Edges.Released & Directions[i] )
+            Viewport->CauseInputEvent( Keys[i], IST_Release );
+    for( INT i = 0; i < 4; ++i )
+    {
+        if( !(Edges.Pressed & Directions[i]) )
+            continue;
+        if( bMenu )
+        {
+            UT99V49PulseKey( Viewport, Keys[i] );
+            UT99V49PulseKey( Viewport, UiKeys[i] );
+        }
+        else
+            Viewport->CauseInputEvent( Keys[i], IST_Press );
+    }
+    if( Edges.Pressed || Edges.Released )
+        UT99_ANDROID_SDL_LOGI( "controller dpad menu=%d pressed=%d released=%d",
+            bMenu ? 1 : 0, (INT)Edges.Pressed, (INT)Edges.Released );
+}
+
+static void UT99AndroidClearDirectDPad()
+{
+    GUT99V50BtnDPadUp = GUT99V50BtnDPadDown = 0;
+    GUT99V50BtnDPadLeft = GUT99V50BtnDPadRight = 0;
+    GUT99V50HatX = GUT99V50HatY = 0.0f;
+}
+
+static void UT99AndroidClearDPad( UNSDLViewport* Viewport )
+{
+    GUT99AndroidDPad.ClearDevices();
+    UT99AndroidClearDirectDPad();
+    UT99AndroidTickDPad( Viewport, Viewport->bShowWindowsMouse );
+}
+
 static void UT99V49MenuCaptureTick( UNSDLViewport* Viewport, UBOOL bMenu )
 {
     if( !Viewport || !bMenu )
@@ -1277,10 +1331,6 @@ static void UT99V49MenuCaptureTick( UNSDLViewport* Viewport, UBOOL bMenu )
     UT99V49MenuEdgeKey( Viewport, GUT99V50BtnR2 || GUT99V50RT > 0.60f, GUT99V49OldR2, IK_Joy13, 0, "TriggerR" );
     UT99V49MenuEdgeKey( Viewport, GUT99V50BtnThumbL, GUT99V49OldThumbL, IK_Joy8,   0, "LJoyPress" );
     UT99V49MenuEdgeKey( Viewport, GUT99V50BtnThumbR, GUT99V49OldThumbR, IK_Joy9,   0, "RJoyPress" );
-    UT99V49MenuEdgeKey( Viewport, GUT99V50BtnDPadUp || GUT99V50HatY < -0.50f,    GUT99V49OldDPadUp,    IK_JoyPovUp,    38, "DPadUp" );
-    UT99V49MenuEdgeKey( Viewport, GUT99V50BtnDPadDown || GUT99V50HatY > 0.50f,  GUT99V49OldDPadDown,  IK_JoyPovDown,  40, "DPadDown" );
-    UT99V49MenuEdgeKey( Viewport, GUT99V50BtnDPadLeft || GUT99V50HatX < -0.50f, GUT99V49OldDPadLeft,  IK_JoyPovLeft,  37, "DPadLeft" );
-    UT99V49MenuEdgeKey( Viewport, GUT99V50BtnDPadRight || GUT99V50HatX > 0.50f, GUT99V49OldDPadRight, IK_JoyPovRight, 39, "DPadRight" );
 
     // UT99_ANDROID_CONTROLLER_FULL_REMAP_V120:
     // Left stick is no longer only a menu-cursor helper while Controls capture
@@ -1721,6 +1771,8 @@ static void UT99V47TickInput( UNSDLViewport* Viewport, UBOOL bMenu )
     UT99V72PumpStartToggle( Viewport, bMenu );
 #endif
 
+    UT99AndroidTickDPad( Viewport, Viewport->bShowWindowsMouse );
+
     if( bMenu )
     {
 #if defined(__ANDROID__)
@@ -1775,7 +1827,7 @@ static void UT99V47TickInput( UNSDLViewport* Viewport, UBOOL bMenu )
         // updated, but the displayed menu cursor did not move on Retroid/OUYA.
         // UT99V88MenuMouseCursorTick( Viewport );
         // UT99_ANDROID_V108_OUYA_DPAD_SINGLE_STEP:
-        // D-Pad/HAT menu navigation is already handled by UT99V49MenuCaptureTick()
+        // D-Pad/HAT menu navigation is already handled by UT99AndroidTickDPad()
         // above, where one physical edge emits one UI key.  The legacy repeat
         // pulses below caused OUYA to skip every second menu item because OUYA
         // reports the same D-Pad edge through multiple paths.
@@ -2308,16 +2360,6 @@ static DOUBLE GUT99AndroidLastLookLogTimeV41 = 0.0;
 static inline INT UT99AndroidClampIntV41( INT Value, INT MinValue, INT MaxValue )
 {
     return Value < MinValue ? MinValue : ( Value > MaxValue ? MaxValue : Value );
-}
-
-static inline UBOOL UT99AndroidMenuSuppressJoyDuplicateV41( INT Button )
-{
-    /* SDL controller button numeric fallback:
-       A=0, B=1, Back=4, Start=6, DPad Up/Down/Left/Right=11/12/13/14.
-       In menu mode these are already routed as UI/controller events, so the
-       parallel joystick event must not run again. */
-    return Button == 0 || Button == 1 || Button == 4 || Button == 6 ||
-           Button == 11 || Button == 12 || Button == 13 || Button == 14;
 }
 
 static UBOOL UT99AndroidGameplayButtonV41( UNSDLViewport* Viewport, INT Button, UBOOL Down )
@@ -3262,29 +3304,6 @@ static void UT99AndroidAdoptDrawableSizeV29( SDL_Window* Window, INT& X, INT& Y,
         UT99_ANDROID_SDL_LOGI("v29 adopt drawable in %s: requested=%dx%d drawable=%dx%d", Where ? Where : "?", X, Y, DW, DH);
         X = DW;
         Y = DH;
-    }
-}
-#endif
-
-#ifdef PLATFORM_ANDROID
-#define UT99_ANDROID_INPUT_V28_HELPERS 1
-#ifndef UT99_ANDROID_SDL_LOGI
-#include <android/log.h>
-#define UT99_ANDROID_SDL_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "UT99SDL", __VA_ARGS__)
-#endif
-static INT UT99AndroidControllerButtonToUiKeyV28( Uint8 Button )
-{
-    switch( Button )
-    {
-        case SDL_CONTROLLER_BUTTON_A: return IK_Enter;
-        case SDL_CONTROLLER_BUTTON_B: return IK_None; // UT99_ANDROID_CONTROLLER_FULL_REMAP_V120: B is bindable, not menu back
-        case SDL_CONTROLLER_BUTTON_BACK: return IK_None;
-        case SDL_CONTROLLER_BUTTON_START: return IK_None;
-        case SDL_CONTROLLER_BUTTON_DPAD_UP: return IK_Up;
-        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return IK_Down;
-        case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return IK_Left;
-        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return IK_Right;
-        default: return IK_None;
     }
 }
 #endif
@@ -4426,6 +4445,7 @@ void UNSDLViewport::UpdateInput( UBOOL Reset )
 	{
 		appMemset( (void*)JoyAxis, 0, sizeof(JoyAxis) );
 #ifdef PLATFORM_ANDROID
+        GUT99AndroidDPad.Reset( UT99AndroidDirectDPad(), bShowWindowsMouse != 0 );
         // RETROTOUCH_BETA4_INPUT_RESET_SYNC:
         // UInput::ResetInput() reaches this method on respawn, map transitions,
         // network player replacement and other engine-side input resets. Expose a
@@ -4681,8 +4701,8 @@ UBOOL UNSDLViewport::TickInput()
             // 75%/50% native Res.  Therefore native mouse activity hides the
             // UT99 software cursor until the left stick is moved again.
             const FLOAT Dead = 0.16f;
-            FLOAT LX = GUT99V47LX;
-            FLOAT LY = GUT99V47LY;
+            FLOAT LX = GUT99V50LX;
+            FLOAT LY = GUT99V50LY;
             if( UT99V47AbsF( LX ) <= Dead ) LX = 0.0f;
             if( UT99V47AbsF( LY ) <= Dead ) LY = 0.0f;
             const UBOOL bStickCursorActive = (LX != 0.0f || LY != 0.0f);
@@ -4757,6 +4777,9 @@ UBOOL UNSDLViewport::TickInput()
 while( SDL_PollEvent( &Ev ) )
 	{
 #ifdef PLATFORM_ANDROID
+                // SDL also queues raw joystick copies for mapped controllers.
+                if( UT99AndroidIsDuplicateJoystickEvent( Ev ) )
+                    continue;
                 if( bShowWindowsMouse && !GUT99AndroidGameplayLastMouseShowV39 )
                 {
                     UT99AndroidGameplayReleaseMoveKeysV39( this );
@@ -4777,6 +4800,9 @@ while( SDL_PollEvent( &Ev ) )
             }
             case SDL_CONTROLLERDEVICEREMOVED:
             {
+                GUT99AndroidDPad.RemoveDevice( Ev.cdevice.which );
+                UT99AndroidClearDirectDPad();
+                UT99AndroidTickDPad( this, bShowWindowsMouse );
                 // For REMOVED, cdevice.which is the SDL joystick instance id.
                 UT99AndroidCloseControllerInstance( (SDL_JoystickID)Ev.cdevice.which, "SDL_CONTROLLERDEVICEREMOVED" );
                 // A Retroid mode switch can replace one Android device with
@@ -4785,6 +4811,18 @@ while( SDL_PollEvent( &Ev ) )
                 UT99AndroidOpenControllers( "post-remove-rescan" );
                 break;
             }
+            case SDL_JOYDEVICEREMOVED:
+                GUT99AndroidDPad.RemoveDevice( Ev.jdevice.which );
+                UT99AndroidClearDirectDPad();
+                UT99AndroidTickDPad( this, bShowWindowsMouse );
+                break;
+            case SDL_APP_WILLENTERBACKGROUND:
+                UT99AndroidClearDPad( this );
+                break;
+            case SDL_WINDOWEVENT:
+                if( Ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST )
+                    UT99AndroidClearDPad( this );
+                break;
 #endif
 			case SDL_QUIT:
 				// signal to client and remember set a flag just in case
@@ -4931,122 +4969,62 @@ while( SDL_PollEvent( &Ev ) )
 				break;
 			#ifdef PLATFORM_ANDROID
             case SDL_JOYBUTTONDOWN:
-#if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_JOYBUTTONDOWN */
-        if( bShowWindowsMouse )
-        {
-            // Controller events already handled the action. Swallow the duplicate JOY copy.
-            break;
-        }
-#endif
             case SDL_JOYBUTTONUP:
-#if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_JOYBUTTONUP */
-        if( bShowWindowsMouse )
-        {
-            break;
-        }
-#endif
             {
-#ifdef PLATFORM_ANDROID
-            if( bShowWindowsMouse && UT99AndroidMenuSuppressJoyDuplicateV41( Ev.jbutton.button ) )
-                break;
-#endif
-                #define UT99_ANDROID_JOY_FALLBACK_V27 1
                 const UBOOL bDown = (Ev.type == SDL_JOYBUTTONDOWN);
-                EInputKey Key = IK_None;
-                switch( Ev.jbutton.button )
+                const Uint8 Direction = UT99AndroidDPadDirection( Ev.jbutton.button );
+                if( Direction )
                 {
-                    case 0: Key = IK_LeftMouse; break; /* v33 menu click */
-                    case 1: Key = IK_None; break; /* v32 */
-                    case 2: Key = IK_N; break;
-                    case 3: Key = IK_Y; break;
-                    case 4: Key = IK_Joy10; break;
-                    case 5: Key = IK_Joy11; break;
-                    case 6: Key = IK_None; break; /* v32 */
-                    case 7: Key = IK_None; break; /* v32 */
-                    default: Key = (EInputKey)(IK_Joy1 + Clamp<INT>(Ev.jbutton.button,0,15)); break;
+                    GUT99AndroidDPad.SetButton( Ev.jbutton.which, Direction, bDown != 0 );
+                    UT99AndroidTickDPad( this, bShowWindowsMouse );
+                    break;
                 }
-                if( Key != IK_None )
-                    CauseInputEvent( Key, bDown ? IST_Press : IST_Release );
-                if( Ev.jbutton.button == 11 ) { CauseInputEvent( IK_Up, bDown ? IST_Press : IST_Release ); }
-                if( Ev.jbutton.button == 12 ) { CauseInputEvent( IK_Down, bDown ? IST_Press : IST_Release ); }
-                if( Ev.jbutton.button == 13 ) { CauseInputEvent( IK_Left, bDown ? IST_Press : IST_Release ); }
-                if( Ev.jbutton.button == 14 ) { CauseInputEvent( IK_Right, bDown ? IST_Press : IST_Release ); }
-                if( Ev.jbutton.button == 0 ) { CauseInputEvent( IK_Enter, bDown ? IST_Press : IST_Release ); CauseInputEvent( IK_LeftMouse, bDown ? IST_Press : IST_Release ); }
-                #define UT99_ANDROID_JOY_BUTTON_UI_MIRROR_V28 1
-                UT99_ANDROID_SDL_LOGI("joy button %d %s key=%d", Ev.jbutton.button, bDown ? "down" : "up", (int)Key);
+                if( bShowWindowsMouse )
+                    UT99AndroidMenuControllerButtonV43( this, Ev.jbutton.button, bDown );
+                else if( !UT99AndroidGameplayButtonV41( this, Ev.jbutton.button, bDown ) )
+                {
+                    // Android's raw joystick backend exposes digital L2/R2 as 15/16.
+                    if( Ev.jbutton.button == 15 || Ev.jbutton.button == 16 )
+                        UT99AndroidGameplaySetKeyV39( this,
+                            Ev.jbutton.button == 15 ? IK_Joy12 : IK_Joy13, bDown );
+                    else
+                        UT99_ANDROID_SDL_LOGI( "unmapped joystick button=%d instance=%d ignored",
+                            (INT)Ev.jbutton.button, (INT)Ev.jbutton.which );
+                }
                 break;
             }
             case SDL_JOYHATMOTION:
             {
-                if( Ev.jhat.value & SDL_HAT_UP )    { CauseInputEvent( IK_Up, IST_Press ); CauseInputEvent( IK_Up, IST_Release ); }
-                if( Ev.jhat.value & SDL_HAT_DOWN )  { CauseInputEvent( IK_Down, IST_Press ); CauseInputEvent( IK_Down, IST_Release ); }
-                if( Ev.jhat.value & SDL_HAT_LEFT )  { CauseInputEvent( IK_Left, IST_Press ); CauseInputEvent( IK_Left, IST_Release ); }
-                if( Ev.jhat.value & SDL_HAT_RIGHT ) { CauseInputEvent( IK_Right, IST_Press ); CauseInputEvent( IK_Right, IST_Release ); }
-                UT99_ANDROID_SDL_LOGI("joy hat value=%d", Ev.jhat.value);
+                GUT99AndroidDPad.SetHat( Ev.jhat.which, Ev.jhat.value );
+                UT99AndroidTickDPad( this, bShowWindowsMouse );
                 break;
             }
             case SDL_JOYAXISMOTION:
-#if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_JOYAXISMOTION */
-        if( bShowWindowsMouse )
-        {
-            // Retroid/Android accelerometer/joy axes are very noisy here. Swallow silently.
-            break;
-        }
-#endif
             {
-                const int Dead = 12000;
-                if( Ev.jaxis.axis == 0 )
-                {
-                    if( Ev.jaxis.value < -Dead ) { CauseInputEvent( IK_Left, IST_Press ); CauseInputEvent( IK_Left, IST_Release ); }
-                    else if( Ev.jaxis.value > Dead ) { CauseInputEvent( IK_Right, IST_Press ); CauseInputEvent( IK_Right, IST_Release ); }
-                }
-                else if( Ev.jaxis.axis == 1 )
-                {
-                    if( Ev.jaxis.value < -Dead ) { CauseInputEvent( IK_Up, IST_Press ); CauseInputEvent( IK_Up, IST_Release ); }
-                    else if( Ev.jaxis.value > Dead ) { CauseInputEvent( IK_Down, IST_Press ); CauseInputEvent( IK_Down, IST_Release ); }
-                }
+                if( !bShowWindowsMouse && Ev.jaxis.axis <= 1 )
+                    UT99AndroidGameplayControllerAxisV39( this, Ev.jaxis.axis, Ev.jaxis.value );
                 break;
             }
 #endif
 			case SDL_CONTROLLERBUTTONDOWN:
-#if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_CONTROLLERBUTTONDOWN */
-        if( bShowWindowsMouse )
-        {
-            UT99AndroidMenuControllerButtonV43( this, (int)Ev.cbutton.button, 1 );
-            break;
-        }
-#endif
             case SDL_CONTROLLERBUTTONUP:
-#if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_CONTROLLERBUTTONUP */
-        if( bShowWindowsMouse )
-        {
-            UT99AndroidMenuControllerButtonV43( this, (int)Ev.cbutton.button, 0 );
-            break;
-        }
-#endif
             {
 #ifdef PLATFORM_ANDROID
                 const UBOOL bAndroidDown = (Ev.type == SDL_CONTROLLERBUTTONDOWN);
-            if( !bShowWindowsMouse && UT99AndroidGameplayButtonV41( this, Ev.cbutton.button, bAndroidDown ) )
-                break;
-#endif
-#ifdef PLATFORM_ANDROID
-                #define UT99_ANDROID_CONTROLLER_BUTTON_MIRROR_V28 1
+                const Uint8 Direction = UT99AndroidDPadDirection( Ev.cbutton.button );
+                if( Direction )
                 {
-                    const INT AndroidUiKey = UT99AndroidControllerButtonToUiKeyV28( Ev.cbutton.button );
-                    if( AndroidUiKey != IK_None )
-                    {
-                        CauseInputEvent( AndroidUiKey, bAndroidDown ? IST_Press : IST_Release );
-                        if( AndroidUiKey == IK_Enter )
-                            CauseInputEvent( IK_LeftMouse, bAndroidDown ? IST_Press : IST_Release );
-                        UT99_ANDROID_SDL_LOGI("controller button %d %s uiKey=%d", Ev.cbutton.button, bAndroidDown ? "down" : "up", AndroidUiKey);
-                    }
+                    GUT99AndroidDPad.SetButton( Ev.cbutton.which, Direction, bAndroidDown != 0 );
+                    UT99AndroidTickDPad( this, bShowWindowsMouse );
+                    break;
                 }
+                if( bShowWindowsMouse )
+                {
+                    UT99AndroidMenuControllerButtonV43( this, Ev.cbutton.button, bAndroidDown );
+                    break;
+                }
+                if( UT99AndroidGameplayButtonV41( this, Ev.cbutton.button, bAndroidDown ) )
+                    break;
 #endif
 					// HACK: Swap to alternate bindings when in menus, but not when waiting for keypress in the keybind menu.
 					// Note: GetMainFrame() is Unreal 1 specific, disabled for UT99
@@ -5057,44 +5035,39 @@ while( SDL_PollEvent( &Ev ) )
 				break;
 			case SDL_CONTROLLERAXISMOTION:
 #if __ANDROID__
-        /* UT99_ANDROID_MENU_INPUT_V43_SDL_CONTROLLERAXISMOTION */
-        if( bShowWindowsMouse )
         {
-            // UT99_ANDROID_CONTROLLER_CAPTURE_FIX_V121:
-            // Menu mode previously updated only the left-stick cursor variables
-            // and then broke out. The Controls capture path reads the v50 mirror
-            // state, so LJoy/RJoy directions never reached Preferences > Controls.
-            // Mirror every SDL controller axis into the Android/v50/v47 state here.
-            // Left stick still drives the visible menu cursor via GUT99V47LX/LY.
+            // Keep menu snapshots current in both modes, without copying SDL
+            // axes into the independent JNI/touch gameplay bridge.
             const FLOAT Norm = UT99V47ClampF( (FLOAT)Ev.caxis.value / 32767.0f, -1.0f, 1.0f );
             switch( Ev.caxis.axis )
             {
                 case SDL_CONTROLLER_AXIS_LEFTX:
                     GUT99V50LX = Norm;
-                    GUT99V47LX = Norm;
                     break;
                 case SDL_CONTROLLER_AXIS_LEFTY:
                     GUT99V50LY = Norm;
-                    GUT99V47LY = Norm;
                     break;
                 case SDL_CONTROLLER_AXIS_RIGHTX:
                     GUT99V50RX = Norm;
-                    GUT99V47RX = Norm;
                     break;
                 case SDL_CONTROLLER_AXIS_RIGHTY:
                     GUT99V50RY = Norm;
-                    GUT99V47RY = Norm;
                     break;
                 case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
                     GUT99V50LT = Norm;
-                    GUT99V47LT = Norm;
                     break;
                 case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
                     GUT99V50RT = Norm;
-                    GUT99V47RT = Norm;
                     break;
             }
-            break;
+            if( bShowWindowsMouse )
+            {
+                // A stick centered in the menu must not resume stale look input.
+                if( Ev.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTX
+                    || Ev.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY )
+                    UT99AndroidGameplayControllerAxisV39( this, Ev.caxis.axis, Ev.caxis.value );
+                break;
+            }
         }
 #endif
             {

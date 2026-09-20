@@ -101,3 +101,23 @@ The Automotive flavor keeps the shared game/engine sources but activates AAOS be
 - SDL touch normalization uses the actual visible `SurfaceView` dimensions instead of the physical display dimensions. This avoids touch-position offsets caused by AAOS system-bar/safe-area regions while leaving the existing Normal/OUYA touch path unchanged.
 
 The project uses Android Gradle Plugin 8.6.1 / Gradle 8.7 and requires JDK 17 or newer.
+
+## Controller input regression checks
+
+The release workflow runs the native input checks before building the APK.
+They can also run locally with a C++17 compiler, without an Android device or
+game data:
+
+```sh
+test_binary="$(mktemp)"
+trap 'rm -f "$test_binary"' EXIT
+c++ -std=c++17 -Wall -Wextra -Werror \
+  -Ithird_party/SDL2/include \
+  -Ithird_party/ut99dc/Source/NSDLDrv/Inc \
+  tools/test_android_controller_input.cpp -o "$test_binary"
+"$test_binary"
+```
+
+Coverage includes mapped-controller/raw-joystick ownership, overlapping D-pad
+sources, menu transitions, held inputs, quick taps, diagonals, input resets,
+and disconnect/reconnect state.

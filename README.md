@@ -114,13 +114,21 @@ The default controller mapping is designed for Android gamepads, OUYA and handhe
 | B / bottom face button / OUYA O | Crouch |
 | Y / left face button / OUYA U | Walk |
 | X / top face button / OUYA Y | Wave |
-| D-Pad | Menu navigation / in-game navigation depending on context |
+| D-Pad Left / Right | Previous / next weapon; navigation in menus |
+| D-Pad Up / Down | Previous / next inventory item; navigation in menus |
 | Start | Pause / menu |
 | Back | Back / cancel depending on context |
 
 > [!NOTE]
 > Button names can differ between Android controllers.  
 > If movement or looking feels wrong, open the in-game controls menu and reassign the affected controls.
+
+Controller movement and D-pad actions use separate bindings. Gameplay does not
+also synthesize keyboard arrows from these controls. Android key and SDL hat
+reports of the same D-pad press are combined, while menus still receive
+navigation keys and physical keys for control reassignment. Existing
+`AndroidUser.ini` bindings are preserved; custom assignments are not reset.
+The phone's accelerometer is not treated as a movement joystick.
 
 ---
 

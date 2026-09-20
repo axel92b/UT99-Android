@@ -76,6 +76,11 @@ void UNSDLClient::Init( UEngine* InEngine )
 
 	Controller = NULL;
 
+#ifdef PLATFORM_ANDROID
+	// Only physical controls should enter the raw joystick movement fallback.
+	SDL_SetHint( SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0" );
+#endif
+
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK ) < 0 )
 	{
 		appErrorf( "SDL_Init failed: %s", SDL_GetError() );

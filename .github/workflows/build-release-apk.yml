@@ -39,6 +39,15 @@ jobs:
           # SDL 2.28.5's unused Android sample wrapper matches its upstream tag.
           allow-checksums: 2c23278a62dc9f96ab11bee897d9f53e6479d6419135e4560ce822a6431df5e5
 
+      - name: Check controller input routing
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror \
+            -Ithird_party/SDL2/include \
+            -Ithird_party/ut99dc/Source/NSDLDrv/Inc \
+            tools/test_android_controller_input.cpp \
+            -o "$RUNNER_TEMP/test_android_controller_input"
+          "$RUNNER_TEMP/test_android_controller_input"
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:

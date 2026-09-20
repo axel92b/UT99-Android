@@ -1,0 +1,91 @@
+name: Build release APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Normal Android release APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check signing configuration
+        env:
+          HAS_DEBUG_KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 != '' }}
+        run: |
+          if [ "$HAS_DEBUG_KEYSTORE" != "true" ]; then
+            echo "::error::Set the ANDROID_DEBUG_KEYSTORE_BASE64 repository secret as described in BUILD-FLAVORS.md."
+            exit 1
+          fi
+
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build dependencies
+        run: |
+          sdkmanager \
+            "platforms;android-35" \
+            "build-tools;34.0.0" \
+            "ndk;23.2.8568313" \
+            "cmake;3.22.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
+        run: bash gradlew --no-daemon --console=plain --stacktrace :app:assembleNormalRelease
+
+      - name: Sign and verify APK
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          keystore="$RUNNER_TEMP/ut99-debug.keystore"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          unset DEBUG_KEYSTORE_BASE64
+
+          build_tools="$ANDROID_HOME/build-tools/34.0.0"
+          mkdir -p artifacts
+          "$build_tools/zipalign" -f -p 4 \
+            app/build/outputs/apk/normal/release/app-normal-release-unsigned.apk \
+            "$RUNNER_TEMP/ut99-aligned.apk"
+          "$build_tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out artifacts/UT99-normal-release.apk \
+            "$RUNNER_TEMP/ut99-aligned.apk"
+          "$build_tools/zipalign" -c -p 4 artifacts/UT99-normal-release.apk
+          "$build_tools/apksigner" verify --verbose --print-certs \
+            artifacts/UT99-normal-release.apk
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UT99-normal-release-${{ github.run_number }}
+          path: artifacts/UT99-normal-release.apk
+          if-no-files-found: error
+          retention-days: 14

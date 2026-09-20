@@ -155,6 +155,9 @@ General setup:
 4. Fetch or provide required third-party dependencies such as SDL2 if they are not already present (now included for all those asking AI).
 5. Build the `app` module.
 
+For GitHub Actions release APKs signed with a reusable debug key, see the
+[workflow and signing setup](BUILD-FLAVORS.md#github-actions-release-apk).
+
 Current Android build characteristics:
 
 ```text

@@ -2055,6 +2055,12 @@ void UGameEngine::Tick( FLOAT DeltaSeconds )
 	INT LocalTickCycles=0;
 	clock(LocalTickCycles);
 
+#ifdef PLATFORM_ANDROID
+	// Sample input before PlayerInput/PlayerTick, not as part of rendering.
+	if( Client )
+		Client->PollInput( DeltaSeconds );
+#endif
+
 	// If all viewports closed, time to exit.
 	if( Client && Client->Viewports.Num()==0 )
 	{

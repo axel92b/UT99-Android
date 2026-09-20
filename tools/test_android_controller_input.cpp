@@ -195,6 +195,49 @@ static void TestQuickTapsAndDiagonals()
     ExpectEdges( State, 0, false, 0, SDL_HAT_RIGHTDOWN );
 }
 
+static void TestControllerThresholds()
+{
+    assert( UT99AndroidStickValue( 0.10f, 0.10f ) == 0.0f );
+    assert( UT99AndroidStickValue( -0.10f, 0.10f ) == 0.0f );
+    assert( UT99AndroidStickValue( 0.1001f, 0.10f ) > 0.0f );
+    assert( UT99AndroidStickValue( -0.1001f, 0.10f ) < 0.0f );
+    assert( UT99AndroidStickValue( 0.20f, 0.25f ) == 0.0f );
+    assert( UT99AndroidStickValue( 0.20f, 0.10f ) == 0.20f );
+    assert( UT99AndroidStickValue( -32768.0f / 32767.0f, 0.10f ) == -1.0f );
+    assert( UT99AndroidStickValue( 1.0f, 1.0f ) == 0.0f );
+
+    assert( !UT99AndroidTriggerPressed( 0.0f ) );
+    assert( !UT99AndroidTriggerPressed( 0.1999f ) );
+    assert( UT99AndroidTriggerPressed( 0.20f ) );
+    assert( UT99AndroidTriggerPressed( 1.0f ) );
+    assert( !UT99AndroidTriggerPressed( 6553.0f / 32767.0f ) );
+    assert( UT99AndroidTriggerPressed( 6554.0f / 32767.0f ) );
+}
+
+static void TestFrameIndependentLook()
+{
+    for( float Rate : { 32767.0f * 0.00122f * 60.0f, 32767.0f * 0.00088f * 60.0f } )
+    {
+        for( float Stick : { -1.0f, -0.11f, 0.0f, 0.05f, 0.11f, 1.0f } )
+        {
+            const double Expected = UT99AndroidStickValue( Stick, 0.10f ) * Rate * 2.0;
+            for( int Fps : { 20, 30, 60, 90, 120, 144 } )
+            {
+                double Total = 0.0;
+                for( int Frame = 0; Frame < Fps * 2; ++Frame )
+                    Total += UT99AndroidLookDelta( Stick, 0.10f, Rate, 1.0f / Fps );
+                assert( std::fabs(Total - Expected) < 0.002 );
+            }
+        }
+        assert( UT99AndroidLookDelta( 1.0f, 0.10f, Rate, 0.0f ) == 0.0f );
+        assert( UT99AndroidLookDelta( 1.0f, 0.10f, Rate, -1.0f ) == 0.0f );
+        assert( UT99AndroidLookDelta( 1.0f, 0.10f, Rate, 4.0f )
+            == UT99AndroidLookDelta( 1.0f, 0.10f, Rate, 0.40f ) );
+        assert( UT99AndroidLookDelta( 0.5f, 0.10f, Rate, 1.0f / 60.0f ) > 0.0f );
+        assert( UT99AndroidLookDelta( 0.0f, 0.10f, Rate, 1.0f / 60.0f ) == 0.0f );
+    }
+}
+
 int main()
 {
     TestRawEventOwnership();
@@ -203,5 +246,7 @@ int main()
     TestMenuTransitions();
     TestResetAndDisconnect();
     TestQuickTapsAndDiagonals();
+    TestControllerThresholds();
+    TestFrameIndependentLook();
     std::puts( "Android controller input regression checks passed." );
 }

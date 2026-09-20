@@ -57,7 +57,7 @@ class NSDLDRV_API UNSDLViewport : public UViewport
 	// UNSDLViewport interface.
 	void SetClientSize( INT NewX, INT NewY, UBOOL UpdateProfile );
 	void EndFullscreen();
-	UBOOL TickInput(); // returns true if the viewport has requested death
+	UBOOL TickInput( FLOAT DeltaSeconds=-1.0f ); // returns true if the viewport has requested death
 
 private:
 	// Static variables.
@@ -142,6 +142,9 @@ class NSDLDRV_API UNSDLClient : public UClient, public FNotifyHook
 	virtual void ShowViewportWindows( DWORD ShowFlags, INT DoShow );
 	virtual void EnableViewportWindows( DWORD ShowFlags, INT DoEnable );
 	virtual void Poll();
+#ifdef PLATFORM_ANDROID
+	virtual void PollInput( FLOAT DeltaSeconds ) override;
+#endif
 	virtual UViewport* CurrentViewport();
 	virtual UBOOL Exec( const TCHAR* Cmd, FOutputDevice& Ar=*GLog );
 	virtual void Tick();

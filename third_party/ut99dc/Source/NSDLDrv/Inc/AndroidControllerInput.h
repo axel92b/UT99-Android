@@ -2,7 +2,33 @@
 
 #include "SDL_events.h"
 #include "SDL_gamecontroller.h"
+#include <algorithm>
+#include <cmath>
 #include <map>
+
+inline float UT99AndroidStickValue( float Value, float DeadZone )
+{
+    Value = std::max( -1.0f, std::min( Value, 1.0f ) );
+    DeadZone = std::max( 0.0f, std::min( DeadZone, 1.0f ) );
+    return std::fabs( Value ) > DeadZone ? Value : 0.0f;
+}
+
+inline bool UT99AndroidTriggerPressed( float Value )
+{
+    return Value >= 0.20f;
+}
+
+inline float UT99AndroidControllerFrameSeconds( float Seconds )
+{
+    // Match the level tick's maximum step instead of catching up after a long pause.
+    return std::max( 0.0f, std::min( Seconds, 0.40f ) );
+}
+
+inline float UT99AndroidLookDelta( float Value, float DeadZone, float UnitsPerSecond, float Seconds )
+{
+    return UT99AndroidStickValue( Value, DeadZone ) * UnitsPerSecond
+        * UT99AndroidControllerFrameSeconds( Seconds );
+}
 
 inline bool UT99AndroidIsDuplicateJoystickEvent( const SDL_Event& Event )
 {

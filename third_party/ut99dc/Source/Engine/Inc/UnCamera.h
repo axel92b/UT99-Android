@@ -392,6 +392,9 @@ class ENGINE_API UClient : public UObject
 	virtual void Flush( UBOOL AllowPrecache );
 	virtual void ShowViewportWindows( DWORD ShowFlags, int DoShow )=0;
 	virtual void EnableViewportWindows( DWORD ShowFlags, int DoEnable )=0;
+#ifdef PLATFORM_ANDROID
+	virtual void PollInput( FLOAT DeltaSeconds ) {}
+#endif
 	virtual void Tick()=0;
 	virtual UBOOL Exec( const TCHAR* Cmd, FOutputDevice& Ar=*GLog )=0;
 	virtual class UViewport* NewViewport( const FName Name )=0;

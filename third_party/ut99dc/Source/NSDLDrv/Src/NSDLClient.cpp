@@ -176,6 +176,23 @@ void UNSDLClient::Poll()
 	unguard;
 }
 
+#ifdef PLATFORM_ANDROID
+void UNSDLClient::PollInput( FLOAT DeltaSeconds )
+{
+	guard(UNSDLClient::PollInput);
+	for( INT i=0; i<Viewports.Num(); ++i )
+	{
+		UNSDLViewport* Viewport = CastChecked<UNSDLViewport>(Viewports(i));
+		if( !Viewport->GetWindow() || Viewport->TickInput(DeltaSeconds) )
+		{
+			delete Viewport;
+			return;
+		}
+	}
+	unguard;
+}
+#endif
+
 //
 // Perform timer-tick processing on all visible viewports.  This causes
 // all realtime viewports, and all non-realtime viewports which have been
@@ -202,12 +219,14 @@ void UNSDLClient::Tick()
 		{
 			BestViewport = Viewport;
 		}
-		// Tick input for this viewport and see if it wants to die.
+#ifndef PLATFORM_ANDROID
+		// Android input has already been sampled before the world tick.
 		if( Viewport->TickInput() )
 		{
 			delete Viewport;
 			return;
 		}
+#endif
 	}
 
 	if( BestViewport )

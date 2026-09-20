@@ -130,6 +130,18 @@ navigation keys and physical keys for control reassignment. Existing
 `AndroidUser.ini` bindings are preserved; custom assignments are not reset.
 The phone's accelerometer is not treated as a movement joystick.
 
+Controller input is sampled before the world update. Right-stick aiming uses
+the `JoyU` / `JoyV` turn/look bindings instead of the mouse-smoothing path, and
+its speed is scaled by frame time rather than FPS. Existing mouse sensitivity,
+mouse-axis speed and invert settings remain the reference for aiming; controller
+`ScaleRUV` also scales it. Custom right-stick direction actions remain bindable
+and replace continuous aiming in their assigned direction.
+
+Physical sticks honor `DeadZoneXYZ` (movement) and `DeadZoneRUV` (aiming) under
+`[NSDLDrv.NSDLClient]` in `AndroidUT99.ini`; both default to `0.10`. Triggers
+activate at **20%** travel. Touch movement keeps its existing 35% threshold,
+and touch-look / physical-mouse smoothing settings are unchanged.
+
 ---
 
 ## ▣ Game data notes

@@ -1416,6 +1416,8 @@ static UBOOL UT99AndroidShouldShowKeyboardV49( INT X, INT Y )
 #define UT99_ANDROID_NATIVE_INPUT_V47 1
 static FLOAT GUT99V47LX = 0.0f;
 static FLOAT GUT99V47LY = 0.0f;
+static FLOAT GUT99TouchMoveX = 0.0f;
+static FLOAT GUT99TouchMoveY = 0.0f;
 static FLOAT GUT99V47RX = 0.0f;
 static FLOAT GUT99V47RY = 0.0f;
 static FLOAT GUT99V101TouchLookX = 0.0f; // UT99_ANDROID_V103_TOUCH_OVERLAY accumulated relative touch look
@@ -1579,15 +1581,16 @@ static void UT99V117PressMapped( UNSDLViewport* Viewport, INT Key, UBOOL& OldSta
 
     if( OldState && ( !NewState || OldKey != Key ) )
     {
-        UT99V47Event( Viewport, OldKey > IK_None ? OldKey : Key, IST_Release );
+        const INT ReleaseKey = OldKey > IK_None ? OldKey : Key;
         OldState = 0;
         OldKey = IK_None;
+        UT99V47Event( Viewport, ReleaseKey, IST_Release );
     }
     if( NewState && !OldState )
     {
-        UT99V47Event( Viewport, Key, IST_Press );
         OldState = 1;
         OldKey = Key;
+        UT99V47Event( Viewport, Key, IST_Press );
         if( !GUT99V117LoggedActive )
         {
             GUT99V117LoggedActive = 1;
@@ -1596,6 +1599,60 @@ static void UT99V117PressMapped( UNSDLViewport* Viewport, INT Key, UBOOL& OldSta
         if( Name )
             UT99_ANDROID_SDL_LOGI( "UT99_ANDROID_CONTROLLER_BINDING_FIX_V117 %s key=%d down", Name, Key );
     }
+}
+
+static void UT99AndroidApplyMovement( UNSDLViewport* Viewport, FLOAT DeadZone, UBOOL Enabled )
+{
+    const FLOAT X = UT99AndroidStickValue( GUT99V47LX, DeadZone );
+    const FLOAT Y = UT99AndroidStickValue( GUT99V47LY, DeadZone );
+    const FLOAT TouchDead = 0.35f;
+    UT99V117PressMapped( Viewport, IK_UnknownDA, GUT99V47MoveF, GUT99V117MoveFKey,
+        Enabled && (Y < 0.0f || GUT99TouchMoveY < -TouchDead), "LJoyUp" );
+    UT99V117PressMapped( Viewport, IK_UnknownDF, GUT99V47MoveB, GUT99V117MoveBKey,
+        Enabled && (Y > 0.0f || GUT99TouchMoveY > TouchDead), "LJoyDown" );
+    UT99V117PressMapped( Viewport, IK_UnknownD8, GUT99V47MoveL, GUT99V117MoveLKey,
+        Enabled && (X < 0.0f || GUT99TouchMoveX < -TouchDead), "LJoyLeft" );
+    UT99V117PressMapped( Viewport, IK_UnknownD9, GUT99V47MoveR, GUT99V117MoveRKey,
+        Enabled && (X > 0.0f || GUT99TouchMoveX > TouchDead), "LJoyRight" );
+}
+
+static UBOOL UT99AndroidCustomLookBinding( UNSDLViewport* Viewport, EInputKey Key, const TCHAR* Default )
+{
+    if( !Viewport->Input )
+        return 0;
+    const FString& Binding = Viewport->Input->Bindings[Key];
+    return Binding.Len() && appStricmp( *Binding, Default ) != 0;
+}
+
+static void UT99AndroidApplyLookButtons( UNSDLViewport* Viewport, UBOOL Enabled )
+{
+    // Default turn/look bindings use continuous axes; keep custom direction actions bindable.
+    const FLOAT Dead = 0.60f;
+    UT99V117PressMapped( Viewport, IK_Joy14, GUT99V118RJoyLeft, GUT99V118RJoyLeftKey,
+        Enabled && GUT99V47RX < -Dead && UT99AndroidCustomLookBinding(Viewport, IK_Joy14, TEXT("TurnLeft")), "RJoyLeft" );
+    UT99V117PressMapped( Viewport, IK_Joy15, GUT99V118RJoyRight, GUT99V118RJoyRightKey,
+        Enabled && GUT99V47RX > Dead && UT99AndroidCustomLookBinding(Viewport, IK_Joy15, TEXT("TurnRight")), "RJoyRight" );
+    UT99V117PressMapped( Viewport, IK_Joy16, GUT99V118RJoyUp, GUT99V118RJoyUpKey,
+        Enabled && GUT99V47RY < -Dead && UT99AndroidCustomLookBinding(Viewport, IK_Joy16, TEXT("LookUp")), "RJoyUp" );
+    UT99V117PressMapped( Viewport, IK_UnknownEA, GUT99V118RJoyDown, GUT99V118RJoyDownKey,
+        Enabled && GUT99V47RY > Dead && UT99AndroidCustomLookBinding(Viewport, IK_UnknownEA, TEXT("LookDown")), "RJoyDown" );
+}
+
+static void UT99AndroidApplyTriggers( UNSDLViewport* Viewport, UBOOL Enabled )
+{
+    UT99V117PressMapped( Viewport, IK_Joy13, GUT99V47Fire, GUT99V117FireKey,
+        Enabled && (GUT99V50BtnR2 || UT99AndroidTriggerPressed(GUT99V47RT)), "TriggerR" );
+    UT99V117PressMapped( Viewport, IK_Joy12, GUT99V47AltFire, GUT99V117AltFireKey,
+        Enabled && (GUT99V50BtnL2 || UT99AndroidTriggerPressed(GUT99V47LT)), "TriggerL" );
+}
+
+static void UT99AndroidClearControllerAxes()
+{
+    GUT99V47LX = GUT99V47LY = GUT99V47RX = GUT99V47RY = 0.0f;
+    GUT99V47LT = GUT99V47RT = 0.0f;
+    GUT99V50LX = GUT99V50LY = GUT99V50RX = GUT99V50RY = 0.0f;
+    GUT99V50LT = GUT99V50RT = 0.0f;
+    GUT99V50BtnL2 = GUT99V50BtnR2 = 0;
 }
 
 static UBOOL UT99V47MenuPulse( UNSDLViewport* Viewport, INT Key, INT Slot, FLOAT AnalogValue = 1.0f )
@@ -1737,10 +1794,8 @@ static INT UT99RetroTouchDetermineUiState( UNSDLViewport* Viewport, UBOOL bMenu 
     return 2;
 }
 
-static void UT99V47TickInput( UNSDLViewport* Viewport, UBOOL bMenu )
+static void UT99V47TickInput( UNSDLViewport* Viewport, UBOOL bMenu, FLOAT MoveDeadZone )
 {
-    GUT99AndroidMenuVisibleV91 = bMenu ? 1 : 0;
-    GUT99RetroTouchUiState = UT99RetroTouchDetermineUiState( Viewport, bMenu );
     static UBOOL V72LoggedActive = 0;
     if( !Viewport )
         return;
@@ -1771,7 +1826,13 @@ static void UT99V47TickInput( UNSDLViewport* Viewport, UBOOL bMenu )
     UT99V72PumpStartToggle( Viewport, bMenu );
 #endif
 
-    UT99AndroidTickDPad( Viewport, Viewport->bShowWindowsMouse );
+    bMenu = Viewport->bShowWindowsMouse;
+    GUT99AndroidMenuVisibleV91 = bMenu ? 1 : 0;
+    GUT99RetroTouchUiState = UT99RetroTouchDetermineUiState( Viewport, bMenu );
+    UT99AndroidTickDPad( Viewport, bMenu );
+    UT99AndroidApplyMovement( Viewport, MoveDeadZone, !bMenu );
+    UT99AndroidApplyLookButtons( Viewport, !bMenu );
+    UT99AndroidApplyTriggers( Viewport, !bMenu );
 
     if( bMenu )
     {
@@ -1842,21 +1903,6 @@ if( !GUT99V47BtnStart )
         return;
     }
 
-    const FLOAT MoveDead = 0.35f;
-    UT99V117PressMapped( Viewport, IK_UnknownDA, GUT99V47MoveF, GUT99V117MoveFKey, GUT99V47LY < -MoveDead, "LJoyUp" );
-    UT99V117PressMapped( Viewport, IK_UnknownDF, GUT99V47MoveB, GUT99V117MoveBKey, GUT99V47LY >  MoveDead, "LJoyDown" );
-    UT99V117PressMapped( Viewport, IK_UnknownD8, GUT99V47MoveL, GUT99V117MoveLKey, GUT99V47LX < -MoveDead, "LJoyLeft" );
-    UT99V117PressMapped( Viewport, IK_UnknownD9, GUT99V47MoveR, GUT99V117MoveRKey, GUT99V47LX >  MoveDead, "LJoyRight" );
-
-    // UT99_ANDROID_CONTROLLER_KEY_NAMES_V118:
-    // Right stick remains analog look by default, but its four directions are
-    // also exposed as bindable physical keys for Preferences > Controls.
-    const FLOAT RJoyBindDead = 0.60f;
-    UT99V117PressMapped( Viewport, IK_Joy14,     GUT99V118RJoyLeft,  GUT99V118RJoyLeftKey,  GUT99V47RX < -RJoyBindDead, "RJoyLeft" );
-    UT99V117PressMapped( Viewport, IK_Joy15,     GUT99V118RJoyRight, GUT99V118RJoyRightKey, GUT99V47RX >  RJoyBindDead, "RJoyRight" );
-    UT99V117PressMapped( Viewport, IK_Joy16,     GUT99V118RJoyUp,    GUT99V118RJoyUpKey,    GUT99V47RY < -RJoyBindDead, "RJoyUp" );
-    UT99V117PressMapped( Viewport, IK_UnknownEA, GUT99V118RJoyDown,  GUT99V118RJoyDownKey,  GUT99V47RY >  RJoyBindDead, "RJoyDown" );
-
     // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117:
     // Defaults are kept through AndroidUser.ini/DefUser.ini, but the runtime
     // emits physical controller keys so every function can be remapped.
@@ -1868,11 +1914,6 @@ if( !GUT99V47BtnStart )
     UT99V117PressMapped( Viewport, IK_Joy3,  GUT99V47Wave, GUT99V117WaveKey, GUT99V47BtnX,  "X" );
     UT99V117PressMapped( Viewport, IK_Joy8,  GUT99V120LJoyPress, GUT99V120LJoyPressKey, GUT99V47BtnThumbL, "LJoyPress" ); // UT99_ANDROID_CONTROLLER_FULL_REMAP_V120
     UT99V117PressMapped( Viewport, IK_Joy9,  GUT99V120RJoyPress, GUT99V120RJoyPressKey, GUT99V47BtnThumbR, "RJoyPress" ); // UT99_ANDROID_CONTROLLER_FULL_REMAP_V120
-
-    UBOOL WantFire = GUT99V47RT > 0.35f;
-    UBOOL WantAltFire = GUT99V47LT > 0.35f;
-    UT99V117PressMapped( Viewport, IK_Joy13, GUT99V47Fire, GUT99V117FireKey, WantFire, "TriggerR" );
-    UT99V117PressMapped( Viewport, IK_Joy12, GUT99V47AltFire, GUT99V117AltFireKey, WantAltFire, "TriggerL" );
 
     // v72: START/MENU is a single queued toggle handled at the top of TickInput.
     // The old queued-start-gameplay, held-start-gameplay and Retroid fallback paths
@@ -1899,9 +1940,7 @@ if( !GUT99V47BtnStart )
         }
     }
 
-    // UT99_ANDROID_CONTROLLER_FULL_REMAP_V120:
-    // Do not additionally inject MouseX/MouseY from the physical right stick here.
-    // Physical controllers keep using the v41 SDL continuous-look path.
+    // Physical right-stick look is applied separately through JoyU/JoyV.
 }
 
 static void UT99V47SetAndroidButton( INT KeyCode, UBOOL Down )
@@ -1942,8 +1981,9 @@ static void UT99V47SetAndroidButton( INT KeyCode, UBOOL Down )
         case 103: GUT99V47BtnR1 = Down; break;   // KEYCODE_BUTTON_R1
         case 106: GUT99V47BtnThumbL = Down; break; // KEYCODE_BUTTON_THUMBL - UT99_ANDROID_CONTROLLER_FULL_REMAP_V120
         case 107: GUT99V47BtnThumbR = Down; break; // KEYCODE_BUTTON_THUMBR - UT99_ANDROID_CONTROLLER_FULL_REMAP_V120
-        case 104: GUT99V47LT = Down ? 1.0f : 0.0f; break; // KEYCODE_BUTTON_L2 / left trigger as button
-        case 105: GUT99V47RT = Down ? 1.0f : 0.0f; break; // KEYCODE_BUTTON_R2 / right trigger as button
+        // Digital L2/R2 are tracked separately by UT99V49SetAndroidButtonExtra.
+        case 104:
+        case 105: break;
         case 82: GUT99V47BtnStart = Down; break; // KEYCODE_MENU / OUYA center button
         case 108: GUT99V47BtnStart = Down; break;// KEYCODE_BUTTON_START
         case 110: GUT99V47BtnStart = Down; break;// KEYCODE_BUTTON_MODE
@@ -1994,6 +2034,13 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_ast_ut99_GameActivity_nativeAndro
 extern "C" JNIEXPORT jint JNICALL Java_com_ast_ut99_GameActivity_nativeAndroidTouchUiStateRT(JNIEnv*, jclass) { return (jint)GUT99RetroTouchUiState; } // RETROTOUCH_BETA4_STATE_MACHINE_V2
 extern "C" JNIEXPORT jint JNICALL Java_com_ast_ut99_GameActivity_nativeAndroidInputResetSerialRT(JNIEnv*, jclass) { return (jint)GUT99RetroTouchInputResetSerial; } // RETROTOUCH_BETA4_INPUT_RESET_SYNC
 extern "C" JNIEXPORT void JNICALL Java_com_ast_ut99_GameActivity_nativeAndroidAxisV47(JNIEnv*, jclass, jint axis, jfloat value) { UT99V47SetAndroidAxis((INT)axis, (FLOAT)value); }
+extern "C" JNIEXPORT void JNICALL Java_com_ast_ut99_GameActivity_nativeAndroidTouchMoveRT(JNIEnv*, jclass, jfloat x, jfloat y)
+{
+    GUT99TouchMoveX = Clamp( (FLOAT)x, -1.0f, 1.0f );
+    GUT99TouchMoveY = Clamp( (FLOAT)y, -1.0f, 1.0f );
+    GUT99V50LX = GUT99TouchMoveX;
+    GUT99V50LY = GUT99TouchMoveY;
+}
 extern "C" JNIEXPORT void JNICALL Java_com_ast_ut99_GameActivity_nativeAndroidTouchLookV101(JNIEnv*, jclass, jfloat x, jfloat y)
 {
     GUT99V101TouchLookX = Clamp(GUT99V101TouchLookX + (FLOAT)x, -2.0f, 2.0f);
@@ -2272,6 +2319,7 @@ static UBOOL UT99AndroidMenuControllerButtonV43( UNSDLViewport* Viewport, INT Bu
     if( Button == SDL_CONTROLLER_BUTTON_START || Button == 6 )
     {
         UT99V72QueueStartToggle( "sdl-menu-start" );
+        UT99V72PumpStartToggle( Viewport, Viewport->bShowWindowsMouse );
         return 1;
     }
     if( Button == SDL_CONTROLLER_BUTTON_BACK || Button == 4 )
@@ -2337,10 +2385,7 @@ static void UT99AndroidGameplaySetKeyV39( UNSDLViewport* Viewport, EInputKey Key
 }
 static void UT99AndroidGameplayReleaseMoveKeysV39( UNSDLViewport* Viewport )
 {
-    UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDA, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117 LJoyUp
-    UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDF, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117 LJoyDown
-    UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD8, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117 LJoyLeft
-    UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD9, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117 LJoyRight
+    UT99AndroidApplyMovement( Viewport, 0.0f, 0 );
 }
 
 /* UT99_ANDROID_INPUT_ROUTER_V41B_HELPERS_BEGIN
@@ -2350,17 +2395,8 @@ static void UT99AndroidGameplayReleaseMoveKeysV39( UNSDLViewport* Viewport )
 #ifndef UT99_ANDROID_INPUT_ROUTER_V41B_HELPERS
 #define UT99_ANDROID_INPUT_ROUTER_V41B_HELPERS 1
 
-static INT GUT99AndroidRightStickXv41 = 0;
-static INT GUT99AndroidRightStickYv41 = 0;
-static UBOOL GUT99AndroidTriggerFireDownV41 = 0;
-static UBOOL GUT99AndroidTriggerAltFireDownV41 = 0;
 static DOUBLE GUT99AndroidMenuLastButtonTimeV41[32] = {0};
 static DOUBLE GUT99AndroidLastLookLogTimeV41 = 0.0;
-
-static inline INT UT99AndroidClampIntV41( INT Value, INT MinValue, INT MaxValue )
-{
-    return Value < MinValue ? MinValue : ( Value > MaxValue ? MaxValue : Value );
-}
 
 static UBOOL UT99AndroidGameplayButtonV41( UNSDLViewport* Viewport, INT Button, UBOOL Down )
 {
@@ -2383,7 +2419,10 @@ static UBOOL UT99AndroidGameplayButtonV41( UNSDLViewport* Viewport, INT Button, 
             return 1;
         case 6:  /* Start */
             if( Down )
+            {
                 UT99V72QueueStartToggle( "sdl-game-start" );
+                UT99V72PumpStartToggle( Viewport, Viewport->bShowWindowsMouse );
+            }
             return 1;
         case 9:  /* Left shoulder */
             UT99AndroidGameplaySetKeyV39( Viewport, IK_Joy10, Down ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
@@ -2404,114 +2443,73 @@ static UBOOL UT99AndroidGameplayButtonV41( UNSDLViewport* Viewport, INT Button, 
     return 0;
 }
 
-static void UT99AndroidGameplayTriggerAxisV41( UNSDLViewport* Viewport, INT Axis, INT Value )
+static void UT99AndroidTickControllerLook( UNSDLViewport* Viewport, FLOAT DeltaSeconds,
+    FLOAT DeadZone, FLOAT AxisScale, UBOOL InvertV )
 {
-    if( !Viewport )
+    if( !Viewport || !Viewport->Actor || Viewport->bShowWindowsMouse )
         return;
 
-    const INT TriggerDead = 12000;
-    if( Axis == 4 )
+    FLOAT X = GUT99V47RX;
+    FLOAT Y = GUT99V47RY;
+    if( (X < 0 && UT99AndroidCustomLookBinding(Viewport, IK_Joy14, TEXT("TurnLeft")))
+        || (X > 0 && UT99AndroidCustomLookBinding(Viewport, IK_Joy15, TEXT("TurnRight"))) )
+        X = 0.0f;
+    if( (Y < 0 && UT99AndroidCustomLookBinding(Viewport, IK_Joy16, TEXT("LookUp")))
+        || (Y > 0 && UT99AndroidCustomLookBinding(Viewport, IK_UnknownEA, TEXT("LookDown"))) )
+        Y = 0.0f;
+    if( (InvertV != 0) != (Viewport->Actor->bInvertMouse != 0) )
+        Y = -Y;
+
+    // Preserve the old 60 FPS reference speed, without integer quantization or mouse smoothing.
+    const FLOAT Sensitivity = Viewport->Actor->MouseSensitivity * AxisScale / 100.0f;
+    FLOAT MouseScaleX = 1.0f;
+    FLOAT MouseScaleY = 1.0f;
+    if( Viewport->Input )
     {
-        UBOOL Down = Value > TriggerDead;
-        if( Down != GUT99AndroidTriggerAltFireDownV41 )
-        {
-            GUT99AndroidTriggerAltFireDownV41 = Down;
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_Joy12, Down ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        }
+        Parse( *Viewport->Input->Bindings[IK_MouseX], TEXT("SPEED="), MouseScaleX );
+        Parse( *Viewport->Input->Bindings[IK_MouseY], TEXT("SPEED="), MouseScaleY );
     }
-    else if( Axis == 5 )
-    {
-        UBOOL Down = Value > TriggerDead;
-        if( Down != GUT99AndroidTriggerFireDownV41 )
-        {
-            GUT99AndroidTriggerFireDownV41 = Down;
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_Joy13, Down ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        }
-    }
-}
-
-static void UT99AndroidGameplayTickLookV41( UNSDLViewport* Viewport )
-{
-    if( !Viewport )
-        return;
-
-    if( GUT99AndroidRightStickXv41 == 0 && GUT99AndroidRightStickYv41 == 0 )
-        return;
-
-    // UT99_ANDROID_V83_RIGHT_STICK_SPEED:
-    // v82 still felt slightly too slow on both OUYA and Retroid.  Increase the
-    // real continuous-look delta, not just the diagnostic log value.  This is
-    // intentionally moderate to avoid returning to the old over-fast spin bug.
-    const FLOAT LookScaleX = 0.00122f;
-    const FLOAT LookScaleY = 0.00088f;
-    INT Dx = UT99AndroidClampIntV41( (INT)( (FLOAT)GUT99AndroidRightStickXv41 * LookScaleX ), -96, 96 );
-    INT Dy = UT99AndroidClampIntV41( (INT)( (FLOAT)-GUT99AndroidRightStickYv41 * LookScaleY ), -38, 38 );
-
-    if( Dx != 0 )
-        Viewport->CauseInputEvent( IK_MouseX, IST_Axis, (FLOAT)Dx );
-    if( Dy != 0 )
-        Viewport->CauseInputEvent( IK_MouseY, IST_Axis, (FLOAT)Dy );
+    const FLOAT Dx = UT99AndroidLookDelta( X, DeadZone, 32767.0f * 0.00122f * 60.0f, DeltaSeconds ) * Sensitivity * MouseScaleX;
+    const FLOAT Dy = UT99AndroidLookDelta( Y, DeadZone, 32767.0f * 0.00088f * 60.0f, DeltaSeconds ) * Sensitivity * MouseScaleY;
+    if( Dx != 0.0f )
+        Viewport->CauseInputEvent( IK_JoyU, IST_Axis, Dx );
+    if( Dy != 0.0f )
+        Viewport->CauseInputEvent( IK_JoyV, IST_Axis, Dy );
 
 #if PLATFORM_ANDROID
     DOUBLE Now = appSeconds();
-    if( Now - GUT99AndroidLastLookLogTimeV41 > 0.50 )
+    if( (Dx != 0.0f || Dy != 0.0f) && Now - GUT99AndroidLastLookLogTimeV41 > 0.50 )
     {
         GUT99AndroidLastLookLogTimeV41 = Now;
 
-UT99_ANDROID_SDL_LOGI( "v83 gameplay continuous look rx=%d ry=%d dx=%d dy=%d", GUT99AndroidRightStickXv41, GUT99AndroidRightStickYv41, Dx, Dy );
+        UT99_ANDROID_SDL_LOGI( "controller direct look x=%.3f y=%.3f dt=%.4f dx=%.3f dy=%.3f",
+            X, Y, DeltaSeconds, Dx, Dy );
     }
 #endif
 }
 
 #endif /* UT99_ANDROID_INPUT_ROUTER_V41B_HELPERS */
 /* UT99_ANDROID_INPUT_ROUTER_V41B_HELPERS_END */
-static UBOOL UT99AndroidGameplayControllerAxisV39( UNSDLViewport* Viewport, INT Axis, INT Value )
+static UBOOL UT99AndroidGameplayControllerAxisV39( UNSDLViewport* Viewport, INT Axis, INT Value, FLOAT MoveDeadZone )
 {
     if( !Viewport )
         return 0;
 
-    const INT Dead = 10000; /* UT99_ANDROID_INPUT_ROUTER_V41 */
-    const FLOAT LookScale = 0.00265f; /* UT99_ANDROID_LOOK_SPEED_V45 */ /* unused by v41 continuous look */
-
-    // SDL controller axis order: 0=LX, 1=LY, 2=RX, 3=RY, 4/5=triggers.
-    if( Axis == 0 )
+    const INT AndroidAxes[] = { 0, 1, 11, 14, 17, 18 }; // X, Y, Z, RZ, LTRIGGER, RTRIGGER
+    if( Axis < 0 || Axis >= 6 )
     {
-        UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD8, Value < -Dead ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD9, Value >  Dead ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        if( UT99AndroidAbsV39(Value) <= Dead )
-        {
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD8, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownD9, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        }
+        UT99_ANDROID_SDL_LOGI( "unsupported controller axis=%d ignored", Axis );
         return 1;
     }
-    if( Axis == 1 )
-    {
-        UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDA, Value < -Dead ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDF, Value >  Dead ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        if( UT99AndroidAbsV39(Value) <= Dead )
-        {
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDA, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-            UT99AndroidGameplaySetKeyV39( Viewport, IK_UnknownDF, 0 ); // UT99_ANDROID_CONTROLLER_BINDING_FIX_V117
-        }
-        return 1;
-    }
-    if( Axis == 2 )
-    {
-        GUT99AndroidRightStickXv41 = (UT99AndroidAbsV39(Value) > Dead) ? Value : 0;
-        return 1;
-    }
-    if( Axis == 3 )
-    {
-        GUT99AndroidRightStickYv41 = (UT99AndroidAbsV39(Value) > Dead) ? Value : 0;
-        return 1;
-    }
-        if( Axis == 4 || Axis == 5 || Axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || Axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT )
-    {
-        UT99AndroidGameplayTriggerAxisV41( Viewport, Axis, Value );
-        return 1;
-    }
-return 0;
+    UT99V47SetAndroidAxis( AndroidAxes[Axis], Clamp( Value / 32767.0f, -1.0f, 1.0f ) );
+    const UBOOL Enabled = !Viewport->bShowWindowsMouse;
+    if( Axis <= SDL_CONTROLLER_AXIS_LEFTY )
+        UT99AndroidApplyMovement( Viewport, MoveDeadZone, Enabled );
+    else if( Axis <= SDL_CONTROLLER_AXIS_RIGHTY )
+        UT99AndroidApplyLookButtons( Viewport, Enabled );
+    else
+        UT99AndroidApplyTriggers( Viewport, Enabled );
+    return 1;
 }
 #endif
 #endif
@@ -4446,6 +4444,9 @@ void UNSDLViewport::UpdateInput( UBOOL Reset )
 		appMemset( (void*)JoyAxis, 0, sizeof(JoyAxis) );
 #ifdef PLATFORM_ANDROID
         GUT99AndroidDPad.Reset( UT99AndroidDirectDPad(), bShowWindowsMouse != 0 );
+        GUT99V47MoveF = GUT99V47MoveB = GUT99V47MoveL = GUT99V47MoveR = 0;
+        GUT99V47Fire = GUT99V47AltFire = 0;
+        GUT99V118RJoyLeft = GUT99V118RJoyRight = GUT99V118RJoyUp = GUT99V118RJoyDown = 0;
         // RETROTOUCH_BETA4_INPUT_RESET_SYNC:
         // UInput::ResetInput() reaches this method on respawn, map transitions,
         // network player replacement and other engine-side input resets. Expose a
@@ -4555,14 +4556,15 @@ UBOOL UNSDLViewport::CauseInputEvent( INT iKey, EInputAction Action, FLOAT Delta
 	unguard;
 }
 
-UBOOL UNSDLViewport::TickInput()
+UBOOL UNSDLViewport::TickInput( FLOAT DeltaSeconds )
 {
 	guard(UNSDLViewport::TickInput);
 
 	SDL_Event Ev;
 	INT Tmp;
 	const FLOAT CurTime = appSeconds();
-	const FLOAT DeltaTime = CurTime - InputUpdateTime;
+	const FLOAT DeltaTime = DeltaSeconds >= 0.0f
+        ? Clamp( DeltaSeconds, 0.0f, 0.40f ) : CurTime - InputUpdateTime;
 
 #ifdef PLATFORM_ANDROID
     if( GUT99AndroidPendingResolutionXV219 > 0
@@ -4679,100 +4681,8 @@ UBOOL UNSDLViewport::TickInput()
         }
 #endif
 
-	#ifdef PLATFORM_ANDROID
-        if( !bShowWindowsMouse )
-        {
-            UT99AndroidGameplayTickLookV41( this );
-        }
-#endif
 #ifdef PLATFORM_ANDROID
-        UT99V46TickInput( this, bShowWindowsMouse );
-#endif
-#ifdef PLATFORM_ANDROID
-        UT99V47TickInput( this, bShowWindowsMouse );
-        AndroidUpdateNativeMouseCaptureV113( bShowWindowsMouse ); // UT99_ANDROID_NATIVE_MOUSE_RELATIVE_CAPTURE_V113
-        if( bShowWindowsMouse )
-        {
-            // UT99_ANDROID_V81_CURSOR_MODE_SWITCH:
-            // There are two real menu pointer modes on Android/OUYA:
-            //  1) Left stick drives the UT99/UWindow software cursor.
-            //  2) Native Android/OUYA mouse/touchpad uses the platform cursor.
-            // Trying to draw both cursors at once exposes scaling differences at
-            // 75%/50% native Res.  Therefore native mouse activity hides the
-            // UT99 software cursor until the left stick is moved again.
-            const FLOAT Dead = 0.16f;
-            FLOAT LX = GUT99V50LX;
-            FLOAT LY = GUT99V50LY;
-            if( UT99V47AbsF( LX ) <= Dead ) LX = 0.0f;
-            if( UT99V47AbsF( LY ) <= Dead ) LY = 0.0f;
-            const UBOOL bStickCursorActive = (LX != 0.0f || LY != 0.0f);
-
-            if( !UT99AndroidMenuPointerVisibleV169K() && !bStickCursorActive && !GUT99AndroidMenuTouchActiveV169B )
-            {
-                // Touch-only/idle menu mode: no active cursor hover.  Parking the
-                // mouse away from the menu bar makes direct touch selection stable.
-                GUT99V81NativePointerActive = 0;
-                UT99AndroidHideOrParkMenuPointerV169K( this, 0, "idle-menu" );
-            }
-            else if( GUT99V81NativePointerActive && !bStickCursorActive )
-            {
-                // Hide UT99's drawn software cursor; the Android/OUYA native
-                // cursor remains visible and clicks are still delivered at the
-                // scaled viewport coordinates by the mouse event path.
-                bWindowsMouseAvailable = 1;
-                SelectedCursor = 0;
-
-                DOUBLE Now = appSeconds();
-                if( Now - GUT99V81LastCursorModeLog > 1.20 )
-                {
-                    GUT99V81LastCursorModeLog = Now;
-                    UT99_ANDROID_SDL_LOGI( "UT99_ANDROID_V81_CURSOR_MODE native pointer active: hiding UT99 software cursor viewport=%dx%d", SizeX, SizeY );
-                }
-            }
-            else
-            {
-                if( GUT99V81NativePointerActive && bStickCursorActive )
-                {
-                    GUT99V81NativePointerActive = 0;
-                    UT99_ANDROID_SDL_LOGI( "UT99_ANDROID_V81_CURSOR_MODE left stick restored UT99 software cursor" );
-                }
-
-                // Keep the software cursor visible while the left stick is actively
-                // used as a virtual mouse.  It will hide again after the v169k idle
-                // timeout.
-                if( bStickCursorActive )
-                    UT99AndroidMenuPointerActivityV169K( 0, "left-stick" );
-                bWindowsMouseAvailable = 0;
-                SelectedCursor = 0;
-
-                if( bStickCursorActive )
-                {
-                    const INT W = Max( 1, SizeX );
-                    const INT H = Max( 1, SizeY );
-                    if( WindowsMouseX < 0.0f || WindowsMouseX >= (FLOAT)W ) WindowsMouseX = (FLOAT)W * 0.5f;
-                    if( WindowsMouseY < 0.0f || WindowsMouseY >= (FLOAT)H ) WindowsMouseY = (FLOAT)H * 0.5f;
-
-                    // Retroid already feels right at v91 speed.  OUYA reports lower
-                    // effective movement, so compensate only on the OUYA profile.
-                    const FLOAT Speed = GUT99V79OuyaLikeDevice ? 14.0f : 7.5f;
-                    const FLOAT DX = LX * Speed;
-                    const FLOAT DY = LY * Speed;
-
-                    WindowsMouseX = Clamp( WindowsMouseX + DX, 0.0f, (FLOAT)Max( 1, W - 1 ) );
-                    WindowsMouseY = Clamp( WindowsMouseY + DY, 0.0f, (FLOAT)Max( 1, H - 1 ) );
-                    UT99AndroidSetWindowConsoleMouseV91( WindowsMouseX, WindowsMouseY );
-                    if( DX != 0.0f ) CauseInputEvent( IK_MouseX, IST_Axis, DX );
-                    if( DY != 0.0f ) CauseInputEvent( IK_MouseY, IST_Axis, -DY );
-
-                    DOUBLE Now = appSeconds();
-                    if( Now - GUT99V47LastAxisLog > 0.80 )
-                    {
-                        GUT99V47LastAxisLog = Now;
-                        UT99_ANDROID_SDL_LOGI( "v107 software menu cursor x=%.1f y=%.1f dx=%.1f dy=%.1f", WindowsMouseX, WindowsMouseY, DX, DY );
-                    }
-                }
-            }
-        }
+    UT99V72PumpStartToggle( this, bShowWindowsMouse );
 #endif
 while( SDL_PollEvent( &Ev ) )
 	{
@@ -4800,6 +4710,7 @@ while( SDL_PollEvent( &Ev ) )
             }
             case SDL_CONTROLLERDEVICEREMOVED:
             {
+                UT99AndroidClearControllerAxes();
                 GUT99AndroidDPad.RemoveDevice( Ev.cdevice.which );
                 UT99AndroidClearDirectDPad();
                 UT99AndroidTickDPad( this, bShowWindowsMouse );
@@ -4812,16 +4723,21 @@ while( SDL_PollEvent( &Ev ) )
                 break;
             }
             case SDL_JOYDEVICEREMOVED:
+                UT99AndroidClearControllerAxes();
                 GUT99AndroidDPad.RemoveDevice( Ev.jdevice.which );
                 UT99AndroidClearDirectDPad();
                 UT99AndroidTickDPad( this, bShowWindowsMouse );
                 break;
             case SDL_APP_WILLENTERBACKGROUND:
+                UT99AndroidClearControllerAxes();
                 UT99AndroidClearDPad( this );
                 break;
             case SDL_WINDOWEVENT:
                 if( Ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST )
+                {
+                    UT99AndroidClearControllerAxes();
                     UT99AndroidClearDPad( this );
+                }
                 break;
 #endif
 			case SDL_QUIT:
@@ -4985,8 +4901,10 @@ while( SDL_PollEvent( &Ev ) )
                 {
                     // Android's raw joystick backend exposes digital L2/R2 as 15/16.
                     if( Ev.jbutton.button == 15 || Ev.jbutton.button == 16 )
-                        UT99AndroidGameplaySetKeyV39( this,
-                            Ev.jbutton.button == 15 ? IK_Joy12 : IK_Joy13, bDown );
+                    {
+                        UT99V47SetAndroidButton( Ev.jbutton.button == 15 ? 104 : 105, bDown );
+                        UT99AndroidApplyTriggers( this, 1 );
+                    }
                     else
                         UT99_ANDROID_SDL_LOGI( "unmapped joystick button=%d instance=%d ignored",
                             (INT)Ev.jbutton.button, (INT)Ev.jbutton.which );
@@ -5001,8 +4919,8 @@ while( SDL_PollEvent( &Ev ) )
             }
             case SDL_JOYAXISMOTION:
             {
-                if( !bShowWindowsMouse && Ev.jaxis.axis <= 1 )
-                    UT99AndroidGameplayControllerAxisV39( this, Ev.jaxis.axis, Ev.jaxis.value );
+                if( Ev.jaxis.axis <= 1 )
+                    UT99AndroidGameplayControllerAxisV39( this, Ev.jaxis.axis, Ev.jaxis.value, Client->DeadZoneXYZ );
                 break;
             }
 #endif
@@ -5034,48 +4952,12 @@ while( SDL_PollEvent( &Ev ) )
 				}
 				break;
 			case SDL_CONTROLLERAXISMOTION:
-#if __ANDROID__
-        {
-            // Keep menu snapshots current in both modes, without copying SDL
-            // axes into the independent JNI/touch gameplay bridge.
-            const FLOAT Norm = UT99V47ClampF( (FLOAT)Ev.caxis.value / 32767.0f, -1.0f, 1.0f );
-            switch( Ev.caxis.axis )
-            {
-                case SDL_CONTROLLER_AXIS_LEFTX:
-                    GUT99V50LX = Norm;
-                    break;
-                case SDL_CONTROLLER_AXIS_LEFTY:
-                    GUT99V50LY = Norm;
-                    break;
-                case SDL_CONTROLLER_AXIS_RIGHTX:
-                    GUT99V50RX = Norm;
-                    break;
-                case SDL_CONTROLLER_AXIS_RIGHTY:
-                    GUT99V50RY = Norm;
-                    break;
-                case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-                    GUT99V50LT = Norm;
-                    break;
-                case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-                    GUT99V50RT = Norm;
-                    break;
-            }
-            if( bShowWindowsMouse )
-            {
-                // A stick centered in the menu must not resume stale look input.
-                if( Ev.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTX
-                    || Ev.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY )
-                    UT99AndroidGameplayControllerAxisV39( this, Ev.caxis.axis, Ev.caxis.value );
-                break;
-            }
-        }
-#endif
             {
 #ifdef PLATFORM_ANDROID
             {
                 const INT Axis = Ev.caxis.axis;
                 const INT Value = Ev.caxis.value;
-                if( !bShowWindowsMouse && UT99AndroidGameplayControllerAxisV39( this, Axis, Value ) )
+                if( UT99AndroidGameplayControllerAxisV39( this, Axis, Value, Client->DeadZoneXYZ ) )
                     break;
             }
 #endif
@@ -5426,8 +5308,8 @@ case SDL_MOUSEMOTION:
 					if( Ev.motion.xrel || Ev.motion.yrel )
 					{
 #ifdef PLATFORM_ANDROID
-						// UT99_ANDROID_CHROMEOS_MOUSE_FRAMEPACED_FLOAT_V210
-						// Preserve every SDL fallback delta and dispatch once after the
+											// UT99_ANDROID_CHROMEOS_MOUSE_FRAMEPACED_FLOAT_V210
+											// Preserve every SDL fallback delta and dispatch once after the
 						// queue is drained. The parallel fixed-point event wins when present.
 						UT99AndroidMarkNativeMouseActivityV111();
 						AndroidPhysicalMouseFallbackX += Ev.motion.xrel;
@@ -5447,6 +5329,75 @@ case SDL_MOUSEMOTION:
 	}
 
 #ifdef PLATFORM_ANDROID
+    // Apply continuous input only after the latest SDL events have updated its state.
+    UT99V46TickInput( this, bShowWindowsMouse );
+    UT99V47TickInput( this, bShowWindowsMouse, Client->DeadZoneXYZ );
+    UT99AndroidTickControllerLook( this, DeltaTime, Client->DeadZoneRUV, Client->ScaleRUV, Client->InvertV );
+    AndroidUpdateNativeMouseCaptureV113( bShowWindowsMouse );
+    if( bShowWindowsMouse )
+    {
+        const FLOAT Dead = 0.16f;
+        FLOAT LX = GUT99V50LX;
+        FLOAT LY = GUT99V50LY;
+        if( UT99V47AbsF( LX ) <= Dead ) LX = 0.0f;
+        if( UT99V47AbsF( LY ) <= Dead ) LY = 0.0f;
+        const UBOOL bStickCursorActive = (LX != 0.0f || LY != 0.0f);
+
+        if( !UT99AndroidMenuPointerVisibleV169K() && !bStickCursorActive && !GUT99AndroidMenuTouchActiveV169B )
+        {
+            GUT99V81NativePointerActive = 0;
+            UT99AndroidHideOrParkMenuPointerV169K( this, 0, "idle-menu" );
+        }
+        else if( GUT99V81NativePointerActive && !bStickCursorActive )
+        {
+            bWindowsMouseAvailable = 1;
+            SelectedCursor = 0;
+
+            DOUBLE Now = appSeconds();
+            if( Now - GUT99V81LastCursorModeLog > 1.20 )
+            {
+                GUT99V81LastCursorModeLog = Now;
+                UT99_ANDROID_SDL_LOGI( "UT99_ANDROID_V81_CURSOR_MODE native pointer active: hiding UT99 software cursor viewport=%dx%d", SizeX, SizeY );
+            }
+        }
+        else
+        {
+            if( GUT99V81NativePointerActive && bStickCursorActive )
+            {
+                GUT99V81NativePointerActive = 0;
+                UT99_ANDROID_SDL_LOGI( "UT99_ANDROID_V81_CURSOR_MODE left stick restored UT99 software cursor" );
+            }
+            if( bStickCursorActive )
+                UT99AndroidMenuPointerActivityV169K( 0, "left-stick" );
+            bWindowsMouseAvailable = 0;
+            SelectedCursor = 0;
+
+            if( bStickCursorActive )
+            {
+                const INT W = Max( 1, SizeX );
+                const INT H = Max( 1, SizeY );
+                if( WindowsMouseX < 0.0f || WindowsMouseX >= (FLOAT)W ) WindowsMouseX = (FLOAT)W * 0.5f;
+                if( WindowsMouseY < 0.0f || WindowsMouseY >= (FLOAT)H ) WindowsMouseY = (FLOAT)H * 0.5f;
+
+                const FLOAT Speed = GUT99V79OuyaLikeDevice ? 14.0f : 7.5f;
+                const FLOAT DX = LX * Speed;
+                const FLOAT DY = LY * Speed;
+                WindowsMouseX = Clamp( WindowsMouseX + DX, 0.0f, (FLOAT)Max( 1, W - 1 ) );
+                WindowsMouseY = Clamp( WindowsMouseY + DY, 0.0f, (FLOAT)Max( 1, H - 1 ) );
+                UT99AndroidSetWindowConsoleMouseV91( WindowsMouseX, WindowsMouseY );
+                if( DX != 0.0f ) CauseInputEvent( IK_MouseX, IST_Axis, DX );
+                if( DY != 0.0f ) CauseInputEvent( IK_MouseY, IST_Axis, -DY );
+
+                DOUBLE Now = appSeconds();
+                if( Now - GUT99V47LastAxisLog > 0.80 )
+                {
+                    GUT99V47LastAxisLog = Now;
+                    UT99_ANDROID_SDL_LOGI( "v107 software menu cursor x=%.1f y=%.1f dx=%.1f dy=%.1f", WindowsMouseX, WindowsMouseY, DX, DY );
+                }
+            }
+        }
+    }
+
 	// UT99_ANDROID_CHROMEOS_MOUSE_FRAMEPACED_FLOAT_V210
 	// This is frame aggregation, not smoothing: no previous-frame state is kept.
 	if( !bShowWindowsMouse && SDL_GetRelativeMouseMode() && Client && Client->Engine )

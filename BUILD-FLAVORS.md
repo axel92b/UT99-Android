@@ -120,4 +120,5 @@ c++ -std=c++17 -Wall -Wextra -Werror \
 
 Coverage includes mapped-controller/raw-joystick ownership, overlapping D-pad
 sources, menu transitions, held inputs, quick taps, diagonals, input resets,
-and disconnect/reconnect state.
+disconnect/reconnect state, stick and 20% trigger thresholds, and equal
+right-stick displacement over time at 20, 30, 60, 90, 120, and 144 FPS.

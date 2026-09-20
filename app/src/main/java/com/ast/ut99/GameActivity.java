@@ -1002,6 +1002,7 @@ public class GameActivity extends SDLActivity {
     // UT99_ANDROID_NATIVE_INPUT_V47
     private static native void nativeAndroidButtonV47(int keyCode, boolean down);
     private static native void nativeAndroidAxisV47(int axis, float value);
+    private static native void nativeAndroidTouchMoveRT(float x, float y);
     private static native void nativeAndroidTouchLookV101(float x, float y);
     private static native int nativeAndroidInputResetSerialRT();
 
@@ -1012,8 +1013,7 @@ public class GameActivity extends SDLActivity {
     }
 
     void ut99RetroTouchMove(float x, float y) {
-        nativeAndroidAxisV47(android.view.MotionEvent.AXIS_X, x);
-        nativeAndroidAxisV47(android.view.MotionEvent.AXIS_Y, y);
+        nativeAndroidTouchMoveRT(x, y);
     }
 
     void ut99RetroTouchLook(float x, float y) {
@@ -1320,10 +1320,6 @@ public class GameActivity extends SDLActivity {
         return value;
     }
 
-    private float applyDeadzoneV47(float value, float deadzone) {
-        return Math.abs(value) >= deadzone ? value : 0.0f;
-    }
-
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
         final int action = event.getAction();
@@ -1457,14 +1453,11 @@ public class GameActivity extends SDLActivity {
                     ? firstActiveAxisV108(event, android.view.MotionEvent.AXIS_RZ, android.view.MotionEvent.AXIS_RY)
                     : event.getAxisValue(android.view.MotionEvent.AXIS_RZ);
 
-            // UT99_ANDROID_V109_RETROID_TOUCH_RESTORE:
-            // Keep the non-OUYA Android axis path byte-for-byte compatible with
-            // the known-good touch/controller behaviour. OUYA-only fallback axes
-            // stay scoped to OUYA so Retroid touch-look is not starved.
-            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_X, applyDeadzoneV47(lx, 0.12f));
-            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_Y, applyDeadzoneV47(ly, 0.12f));
-            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_Z, applyDeadzoneV47(rx, ouya ? 0.08f : 0.10f));
-            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_RZ, applyDeadzoneV47(ry, ouya ? 0.08f : 0.10f));
+            // Physical SDL and JNI input share the configured native deadzones.
+            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_X, lx);
+            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_Y, ly);
+            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_Z, rx);
+            nativeAndroidAxisV47(android.view.MotionEvent.AXIS_RZ, ry);
             nativeAndroidAxisV47(android.view.MotionEvent.AXIS_LTRIGGER, event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER));
             nativeAndroidAxisV47(android.view.MotionEvent.AXIS_RTRIGGER, event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER));
             nativeAndroidAxisV47(android.view.MotionEvent.AXIS_HAT_X, event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X));

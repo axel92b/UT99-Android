@@ -48,6 +48,11 @@ This is a release build, not a debuggable build. Debug signing is for testing,
 not production distribution. Local release builds and the Automotive flavor's
 signing configuration are unchanged.
 
+Gradle wrappers are checked in a dedicated validation step. The unused wrapper
+in SDL's Android sample project is allowed by its exact SHA-256 checksum,
+verified against SDL's upstream `release-2.28.5` tag. The build executes only
+the repository-root Gradle wrapper.
+
 ### One-time signing setup
 
 Configure the repository's **Settings > Secrets and variables > Actions** with

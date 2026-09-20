@@ -33,6 +33,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate Gradle wrappers
+        uses: gradle/actions/wrapper-validation@v4
+        with:
+          # SDL 2.28.5's unused Android sample wrapper matches its upstream tag.
+          allow-checksums: 2c23278a62dc9f96ab11bee897d9f53e6479d6419135e4560ce822a6431df5e5
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -54,6 +60,9 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          # The dedicated validation step above also checks the SDL sample.
+          validate-wrappers: false
 
       - name: Build release APK
         run: bash gradlew --no-daemon --console=plain --stacktrace :app:assembleNormalRelease
